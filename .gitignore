@@ -1,0 +1,34 @@
+# Ambientes Virtuais 
+venv/
+ENV/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Banco de dados local (SQLite)
+*.sqlite3
+
+# Arquivos de IDE (VS Code / PyCharm)
+.vscode/
+.idea/
+
+# Arquivos de sistema
+.DS_Store
+
+# Segredos e Configurações de Ambiente
+.env
+.env.local
+
+# Uploads de usuários (Fotos/Documentos)
+media/
+
+# Arquivos coletados pelo Django
+staticfiles/
+
+# Logs de erro
+*.log
+
+# Pasta do Cursor (algumas configurações locais)
+.cursor/
