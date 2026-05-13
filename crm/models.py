@@ -1,20 +1,30 @@
 """
-Modelos genéricos do CRM: contatos extensíveis via JSON e leads vinculados 1:1.
+Modelos genéricos do CRM: contatos por workspace, extensíveis via JSON; leads 1:1.
 """
+import uuid  # noqa: F401
+
 from django.db import models
 
+from core.models import BaseModel
 
-class Contact(models.Model):
-    """Pessoa ou organização; atributos flexíveis por nicho em `custom_attributes`."""
+
+class Contact(BaseModel):
+    """Pessoa ou organização dentro de um workspace; atributos flexíveis em JSON."""
 
     class ContactType(models.TextChoices):
         LEAD = 'LEAD', 'Lead'
         CLIENT = 'CLIENT', 'Cliente'
         PARTNER = 'PARTNER', 'Parceiro'
 
-    name = models.CharField(max_length=255)
+    workspace = models.ForeignKey(
+        'workspaces.Workspace',
+        on_delete=models.CASCADE,
+        related_name='contacts',
+        db_index=True,
+    )
+    name = models.CharField(max_length=255, db_index=True)
     phone = models.CharField(max_length=64, blank=True)
-    email = models.EmailField(blank=True)
+    email = models.EmailField(blank=True, db_index=True)
     contact_type = models.CharField(
         max_length=16,
         choices=ContactType.choices,
@@ -31,12 +41,15 @@ class Contact(models.Model):
         ordering = ('name',)
         verbose_name = 'contato'
         verbose_name_plural = 'contatos'
+        indexes = [
+            models.Index(fields=('workspace', 'name')),
+        ]
 
     def __str__(self) -> str:
         return self.name
 
 
-class Lead(models.Model):
+class Lead(BaseModel):
     """Oportunidade comercial ligada a um único contato (1:1)."""
 
     class Status(models.TextChoices):
@@ -50,6 +63,7 @@ class Lead(models.Model):
         Contact,
         on_delete=models.CASCADE,
         related_name='lead',
+        db_index=True,
     )
     status = models.CharField(
         max_length=32,
@@ -57,8 +71,8 @@ class Lead(models.Model):
         default=Status.NEW,
         db_index=True,
     )
-    score = models.IntegerField(default=0)
-    source = models.CharField(max_length=128, default='Manual')
+    score = models.IntegerField(default=0, db_index=True)
+    source = models.CharField(max_length=128, default='Manual', db_index=True)
 
     class Meta:
         ordering = ('-score', 'id')
@@ -66,4 +80,4 @@ class Lead(models.Model):
         verbose_name_plural = 'leads'
 
     def __str__(self) -> str:
-        return f'Lead #{self.pk} — {self.contact.name} ({self.status})'
+        return f'Lead {self.pk} — {self.contact.name} ({self.status})'

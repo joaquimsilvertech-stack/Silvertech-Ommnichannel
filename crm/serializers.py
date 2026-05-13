@@ -8,12 +8,16 @@ class ContactSerializer(serializers.ModelSerializer):
         model = Contact
         fields = (
             'id',
+            'workspace',
             'name',
             'phone',
             'email',
             'contact_type',
             'custom_attributes',
+            'created_at',
+            'updated_at',
         )
+        read_only_fields = ('id', 'created_at', 'updated_at')
 
 
 class LeadSerializer(serializers.ModelSerializer):
@@ -39,8 +43,10 @@ class LeadSerializer(serializers.ModelSerializer):
             'status',
             'score',
             'source',
+            'created_at',
+            'updated_at',
         )
-        read_only_fields = ('id', 'contact')
+        read_only_fields = ('id', 'contact', 'created_at', 'updated_at')
 
     def validate(self, attrs):
         if self.instance is None and 'contact' not in attrs:

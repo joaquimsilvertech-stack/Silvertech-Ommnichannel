@@ -5,8 +5,8 @@ from .models import Contact, Lead
 
 @admin.register(Contact)
 class ContactAdmin(admin.ModelAdmin):
-    list_display = ('name', 'email', 'phone', 'contact_type')
-    list_filter = ('contact_type',)
+    list_display = ('name', 'workspace', 'email', 'phone', 'contact_type')
+    list_filter = ('contact_type', 'workspace')
     search_fields = ('name', 'email', 'phone')
 
 

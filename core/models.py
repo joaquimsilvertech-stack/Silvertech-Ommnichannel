@@ -4,8 +4,21 @@ Modelos centrais da plataforma.
 CustomUser concentra identidade e autorização base do CRM omnichannel.
 Login por e-mail evita duplicidade de identificadores e alinha com fluxos B2B.
 """
+import uuid
+
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.db import models
+
+
+class BaseModel(models.Model):
+    """Campos comuns a entidades de domínio (UUID + auditoria temporal)."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        abstract = True
 
 
 class CustomUserManager(BaseUserManager):
@@ -37,7 +50,10 @@ class CustomUserManager(BaseUserManager):
 class CustomUser(AbstractUser):
     """
     Usuário da plataforma: autenticação por e-mail + perfil operacional (role).
+    Chave primária UUID para APIs públicas e particionamento futuro.
     """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
     username = None
     email = models.EmailField('e-mail', unique=True, db_index=True)
@@ -51,13 +67,14 @@ class CustomUser(AbstractUser):
         max_length=16,
         choices=Role.choices,
         default=Role.VIEWER,
+        db_index=True,
         help_text='Papel genérico para RBAC e políticas de API.',
     )
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = []
 
-    objects = CustomUserManager() # <--- Isso liga o novo Manager ao Usuário
+    objects = CustomUserManager()  # <--- Isso liga o novo Manager ao Usuário
 
     class Meta:
         verbose_name = 'usuário'
