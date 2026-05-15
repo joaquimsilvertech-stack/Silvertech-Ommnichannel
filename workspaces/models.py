@@ -58,6 +58,9 @@ class Member(BaseModel):
 
     class Meta:
         ordering = ('workspace', 'user')
+        indexes = [
+            models.Index(fields=['workspace', 'user']),
+        ]
         constraints = [
             models.UniqueConstraint(
                 fields=('workspace', 'user'),
@@ -67,3 +70,44 @@ class Member(BaseModel):
 
     def __str__(self) -> str:
         return f'{self.user_id} @ {self.workspace_id} ({self.role})'
+
+
+class WorkspaceInvite(BaseModel):
+    """Convite pendente para ingressar em um workspace (Card #008)."""
+
+    class Role(models.TextChoices):
+        ADMIN = 'admin', 'Admin'
+        AGENT = 'agent', 'Agent'
+
+    email = models.EmailField(db_index=True)
+    workspace = models.ForeignKey(
+        Workspace,
+        on_delete=models.CASCADE,
+        related_name='invites',
+        db_index=True,
+    )
+    invited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='workspace_invites_sent',
+    )
+    role = models.CharField(
+        max_length=16,
+        choices=Role.choices,
+        default=Role.AGENT,
+        db_index=True,
+    )
+    token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False, db_index=True)
+    accepted = models.BooleanField(default=False, db_index=True)
+    expires_at = models.DateTimeField(db_index=True)
+
+    class Meta:
+        ordering = ('-created_at',)
+        verbose_name = 'convite de workspace'
+        verbose_name_plural = 'convites de workspace'
+        indexes = [
+            models.Index(fields=['workspace', 'email']),
+        ]
+
+    def __str__(self) -> str:
+        return f'Convite {self.email} → {self.workspace.name}'

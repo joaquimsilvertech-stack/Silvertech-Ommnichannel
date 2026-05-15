@@ -42,6 +42,7 @@ class Contact(BaseModel):
         verbose_name = 'contato'
         verbose_name_plural = 'contatos'
         indexes = [
+            models.Index(fields=['workspace']),
             models.Index(fields=('workspace', 'name')),
         ]
 
@@ -78,6 +79,10 @@ class Lead(BaseModel):
         ordering = ('-score', 'id')
         verbose_name = 'lead'
         verbose_name_plural = 'leads'
+        indexes = [
+            models.Index(fields=['contact']),
+            models.Index(fields=['status']),
+        ]
 
     def __str__(self) -> str:
         return f'Lead {self.pk} — {self.contact.name} ({self.status})'
