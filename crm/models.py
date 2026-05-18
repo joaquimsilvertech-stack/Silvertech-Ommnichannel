@@ -3,6 +3,7 @@ Modelos genéricos do CRM: contatos por workspace, extensíveis via JSON; leads 
 """
 import uuid  # noqa: F401
 
+from django.conf import settings
 from django.db import models
 
 from core.models import BaseModel
@@ -25,6 +26,14 @@ class Contact(BaseModel):
     name = models.CharField(max_length=255, db_index=True)
     phone = models.CharField(max_length=64, blank=True)
     email = models.EmailField(blank=True, db_index=True)
+    channel_id = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text='Identificador do contato no canal (ex.: WhatsApp).',
+    )
+    starred = models.BooleanField(default=False, db_index=True)
     contact_type = models.CharField(
         max_length=16,
         choices=ContactType.choices,
@@ -50,15 +59,44 @@ class Contact(BaseModel):
         return self.name
 
 
+class Organization(BaseModel):
+    """Empresa ou grupo dentro de um workspace, com vários contatos vinculados."""
+
+    workspace = models.ForeignKey(
+        'workspaces.Workspace',
+        on_delete=models.CASCADE,
+        related_name='organizations',
+        db_index=True,
+    )
+    name = models.CharField(max_length=255, db_index=True)
+    contacts = models.ManyToManyField(
+        Contact,
+        blank=True,
+        related_name='organizations',
+    )
+
+    class Meta:
+        ordering = ('name',)
+        verbose_name = 'organização'
+        verbose_name_plural = 'organizações'
+        indexes = [
+            models.Index(fields=['workspace']),
+            models.Index(fields=('workspace', 'name')),
+        ]
+
+    def __str__(self) -> str:
+        return self.name
+
+
 class Lead(BaseModel):
     """Oportunidade comercial ligada a um único contato (1:1)."""
 
     class Status(models.TextChoices):
-        NEW = 'NEW', 'Novo'
-        CONTACTED = 'CONTACTED', 'Contatado'
-        QUALIFIED = 'QUALIFIED', 'Qualificado'
-        CONVERTED = 'CONVERTED', 'Convertido'
-        LOST = 'LOST', 'Perdido'
+        NEW = 'new', 'Novo'
+        CONTACTING = 'contacting', 'Em Contato'
+        QUALIFIED = 'qualified', 'Qualificado'
+        WON = 'won', 'Ganho'
+        LOST = 'lost', 'Perdido'
 
     contact = models.OneToOneField(
         Contact,
@@ -74,6 +112,15 @@ class Lead(BaseModel):
     )
     score = models.IntegerField(default=0, db_index=True)
     source = models.CharField(max_length=128, default='Manual', db_index=True)
+    assigned_to = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='assigned_leads',
+        db_index=True,
+    )
+    notes = models.TextField(blank=True)
 
     class Meta:
         ordering = ('-score', 'id')
