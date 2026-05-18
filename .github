@@ -1,0 +1,25 @@
+## 📝 O que foi feito
+- [ ] *Descreva a mudança em 1-2 frases.*
+- [ ] *Link para o card/tarefa (se houver).*
+
+## 🏗️ App Django afetado
+- [ ] `core`
+- [ ] `workspaces`
+- [ ] `crm`
+- [ ] `omnichannel`
+- [ ] `automations`
+- [ ] Outro / Configurações globais
+
+## 🔄 Tipo de mudança
+- [ ] 🐛 Bug fix (correção de erro)
+- [ ] ✨ Nova feature (nova funcionalidade)
+- [ ] ♻️ Refactor (melhoria de código/performance)
+- [ ] 🗄️ Migration (alteração estrutural no banco de dados)
+- [ ] 🔒 Segurança (CORS, JWT, permissões)
+
+## ✅ Checklist obrigatório (Qualidade Sênior)
+- [ ] A Migration foi criada com nome descritivo (ex: `makemigrations --name=add_campo_novo`)
+- [ ] O Serializer possui validação adequada para os dados de entrada
+- [ ] O Queryset possui filtro de `workspace` (Garantia de isolamento Multi-tenant / Sem vazamento de dados)
+- [ ] Foram usados `select_related` ou `prefetch_related` onde necessário (Evita o problema de N+1 queries)
+- [ ] O código não possui `print()` soltos ou comentários de debug esquecidos
