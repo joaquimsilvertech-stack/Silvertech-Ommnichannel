@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     # API, CORS e domínio
     'corsheaders',
     'rest_framework',
+    'django_filters',
     'rest_framework_simplejwt',
     'core',
     'workspaces',
