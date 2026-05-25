@@ -1,3 +1,6 @@
+from datetime import timedelta
+
+from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import viewsets
 from rest_framework.decorators import action
@@ -20,6 +23,38 @@ class ContactViewSet(WorkspaceScopedQuerysetMixin, viewsets.ModelViewSet):
     filterset_fields = ['contact_type', 'starred', 'workspace']
     search_fields = ['name', 'phone', 'email']
     workspace_lookup = 'workspace'
+
+    @action(detail=True, methods=['get'])
+    def timeline(self, request, pk=None):
+        """
+        Mock preparatório para a Sprint 3 (Omnichannel).
+
+        Retorna eventos fictícios em ordem cronológica até o app omnichannel
+        persistir mensagens, mudanças de status e notas reais.
+        """
+        contact = self.get_object()
+        now = timezone.now()
+        mock_data = [
+            {
+                'type': 'message_received',
+                'content': 'Olá, gostaria de um orçamento',
+                'date': now.isoformat(),
+                'contact_id': str(contact.pk),
+            },
+            {
+                'type': 'status_change',
+                'content': 'Lead movido para Em Contato',
+                'date': (now - timedelta(days=1)).isoformat(),
+                'contact_id': str(contact.pk),
+            },
+            {
+                'type': 'note',
+                'content': 'Cliente prefere contato na parte da manhã',
+                'date': (now - timedelta(days=2)).isoformat(),
+                'contact_id': str(contact.pk),
+            },
+        ]
+        return Response(mock_data)
 
 
 class LeadViewSet(WorkspaceScopedQuerysetMixin, viewsets.ModelViewSet):
