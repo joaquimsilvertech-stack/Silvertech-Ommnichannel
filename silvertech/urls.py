@@ -25,4 +25,5 @@ urlpatterns = [
     path('api/auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('api/crm/', include('crm.urls')),
     path('api/workspaces/', include('workspaces.urls')),
+    path('api/omnichannel/', include('omnichannel.urls')),
 ]
