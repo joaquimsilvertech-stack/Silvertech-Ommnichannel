@@ -33,6 +33,8 @@ ALLOWED_HOSTS = []
 # Application definition
 
 INSTALLED_APPS = [
+    'channels',
+    'django_eventstream',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -82,6 +84,30 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'silvertech.wsgi.application'
+ASGI_APPLICATION = 'silvertech.asgi.application'
+
+# Channels + Redis (Card #024 — infraestrutura tempo real).
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            'hosts': [
+                (
+                    os.environ.get('REDIS_HOST', '127.0.0.1'),
+                    int(os.environ.get('REDIS_PORT', '6379')),
+                ),
+            ],
+        },
+    },
+}
+
+# django-eventstream — publicação multiprocesso via Redis.
+EVENTSTREAM_REDIS = {
+    'host': os.environ.get('REDIS_HOST', '127.0.0.1'),
+    'port': int(os.environ.get('REDIS_PORT', '6379')),
+    'db': int(os.environ.get('REDIS_DB', '0')),
+}
+EVENTSTREAM_CHANNELMANAGER_CLASS = 'omnichannel.channelmanager.WorkspaceChannelManager'
 
 
 # Database
@@ -122,6 +148,7 @@ CORS_ALLOWED_ORIGINS = [
     'http://localhost:3000',
     'http://127.0.0.1:3000',
 ]
+EVENTSTREAM_ALLOW_ORIGINS = CORS_ALLOWED_ORIGINS
 
 
 # Password validation
