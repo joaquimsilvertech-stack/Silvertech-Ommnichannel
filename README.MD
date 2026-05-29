@@ -113,32 +113,32 @@ A documentação interativa e completa dos schemas pode ser consultada via Swagg
 ## Configuração do Ambiente
 
 Siga as etapas abaixo para configurar a arquitetura localmente.
-```bash
+
 1. **Clone o repositório:**
    
    git clone [https://github.com/SeuUsuario/SilverTech-Omnichannel.git](https://github.com/SeuUsuario/SilverTech-Omnichannel.git)
    cd SilverTech-Omnichannel
 
 2. **Configure o ambiente virtual:**
-  ```bash
+  
         python -m venv venv
         source venv/bin/activate  # Linux/Mac
         venv\Scripts\activate     # Windows
 
 3. **Instale as dependências necessárias:**
-  ```bash
+  
         pip install -r requirements.txt
 
 4. **Inicialize o Servidor Redis (Obrigatório para o tempo real):**
-  ```bash
+  
         docker run -d -p 6379:6379 redis
 
 5. **Execute as migrações estruturais do banco:**
-    ```bash
+    
         python manage.py migrate
 
 6. **Inicie o servidor de desenvolvimento assíncrono (Uvicorn):**
-   ```bash
+   
         uvicorn silvertech.asgi:application --reload --host 0.0.0.0 --port 8000
 
   "Atenção: Como o projeto utiliza Django Channels e streaming ativo via protocolo ASGI, não utilize o comando python manage.py runserver, pois ele impossibilitará a execução do fluxo em tempo real (SSE)."
