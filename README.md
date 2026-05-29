@@ -17,7 +17,7 @@
 - [Diagrama de Banco de Dados](#diagrama-de-banco-de-dados)
 - [Documentação da API](#documentação-da-api)
 - [Configuração do Ambiente](#configuração-do-ambiente)
-- [Deploy](#deploy)
+
 
 ## Visão Geral
 A **SilverTech Omnichannel API** é uma solução de backend robusta, assíncrona (ASGI) e multi-tenant (SaaS), projetada para centralizar a comunicação de empresas com seus clientes em múltiplos canais (como a API oficial do WhatsApp Business). O sistema integra um ecossistema completo de CRM à uma caixa de entrada unificada com atualização de dados em tempo real através de Server-Sent Events (SSE), garantindo alta performance na manipulação de grandes volumes de mensagens sem degradação do servidor.
