@@ -113,9 +113,9 @@ A documentação interativa e completa dos schemas pode ser consultada via Swagg
 ## Configuração do Ambiente
 
 Siga as etapas abaixo para configurar a arquitetura localmente.
-
+```bash
 1. **Clone o repositório:**
-   ```bash
+   
    git clone [https://github.com/SeuUsuario/SilverTech-Omnichannel.git](https://github.com/SeuUsuario/SilverTech-Omnichannel.git)
    cd SilverTech-Omnichannel
 
