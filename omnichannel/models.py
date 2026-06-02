@@ -81,6 +81,13 @@ class Message(BaseModel):
         blank=True,
         db_index=True,
     )
+    external_id = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        db_index=True,
+        help_text='ID da mensagem no provedor (ex.: wamid da Meta).',
+    )
 
     class Meta:
         ordering = ('-created_at',)

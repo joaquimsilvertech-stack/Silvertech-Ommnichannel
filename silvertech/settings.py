@@ -109,6 +109,14 @@ EVENTSTREAM_REDIS = {
 }
 EVENTSTREAM_CHANNELMANAGER_CLASS = 'omnichannel.channelmanager.WorkspaceChannelManager'
 
+# Celery — broker/result backend Redis (Card #027).
+_CELERY_REDIS_URL = os.environ.get('CELERY_BROKER_URL', 'redis://127.0.0.1:6379/0')
+CELERY_BROKER_URL = _CELERY_REDIS_URL
+CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', _CELERY_REDIS_URL)
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+
 
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
@@ -149,6 +157,11 @@ CORS_ALLOWED_ORIGINS = [
     'http://127.0.0.1:3000',
 ]
 EVENTSTREAM_ALLOW_ORIGINS = CORS_ALLOWED_ORIGINS
+
+# WhatsApp Cloud API (Meta) — verificação do webhook (Card #025).
+WHATSAPP_VERIFY_TOKEN = os.environ.get('WHATSAPP_VERIFY_TOKEN', 'silvertech_token_secreto')
+WHATSAPP_ACCESS_TOKEN = os.environ.get('WHATSAPP_ACCESS_TOKEN', '')
+WHATSAPP_PHONE_NUMBER_ID = os.environ.get('WHATSAPP_PHONE_NUMBER_ID', '')
 
 
 # Password validation
