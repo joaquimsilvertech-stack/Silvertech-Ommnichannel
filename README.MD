@@ -142,3 +142,7 @@ Siga as etapas abaixo para configurar a arquitetura localmente.
 
   "Atenção: Como o projeto utiliza Django Channels e streaming ativo via protocolo ASGI, não utilize o comando python manage.py runserver, pois ele impossibilitará a execução do fluxo em tempo real (SSE)."
 
+7. **Inicie o Background Worker do Celery (Terminal 2):**
+   
+    # Em sistemas Windows, utilize a flag -P solo:
+        celery -A silvertech worker -l info -P solo
