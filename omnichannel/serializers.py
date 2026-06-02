@@ -10,6 +10,10 @@ class _ContactInboxSerializer(serializers.Serializer):
     channel_id = serializers.CharField(read_only=True, allow_null=True)
 
 
+class MessageCreateSerializer(serializers.Serializer):
+    body = serializers.CharField()
+
+
 class MessageSerializer(serializers.ModelSerializer):
     class Meta:
         model = Message
@@ -19,6 +23,7 @@ class MessageSerializer(serializers.ModelSerializer):
             'body',
             'direction',
             'status',
+            'external_id',
             'created_at',
             'updated_at',
         )
