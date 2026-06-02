@@ -1,8 +1,9 @@
-# 🚀 SilverTech Omnichannel API
+# SilverTech Omnichannel API
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue.svg?logo=python)](https://www.python.org/downloads/)
 [![Django](https://img.shields.io/badge/Django-5.0%2B-green.svg?logo=Django)](https://www.djangoproject.com/)
 [![Redis](https://img.shields.io/badge/Redis-DC382D.svg?logo=redis&logoColor=white)](https://redis.io/)
+[![Celery](https://img.shields.io/badge/Celery-37814A.svg?logo=celery&logoColor=white)](https://docs.celeryq.dev/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Sumário
@@ -50,44 +51,42 @@ Empresas sofrem com o atendimento descentralizado, onde múltiplos agentes utili
 |----------------------------|--------------|-------------------------------------------------------------------|
 | django                     | >=5.0        | Framework web principal do ecossistema                            |
 | djangorestframework        | latest       | Toolkit para construção das APIs RESTful                          |
-| djangorestframework-jwt    | latest       | Mecanismo de autenticação robusta via JSON Web Tokens             |
-| django-channels            | 4.3.2        | Camada ASGI para suporte a protocolos assíncronos e tempo real     |
+| celery                     | >=5.5        | Motor de processamento de tarefas em background e filas           |
+| django-channels            | 4.3.2        | Camada ASGI para suporte a protocolos assíncronos e tempo real    |
 | django-eventstream         | 5.3.3        | Infraestrutura nativa para Server-Sent Events (SSE)               |
 | channels-redis             | 4.3.0        | Driver de integração do Django Channels ao barramento Redis       |
-| django-filter              | latest       | Motor de filtragem declarativa avançada para endpoints            |
+| djangorestframework-jwt    | latest       | Autenticação robusta via JSON Web Tokens                          |
 | uvicorn                    | latest       | Servidor de produção ASGI assíncrono ultrarrápido                 |
 
 > **Nota:** Consulte o arquivo `requirements.txt` para conferir a árvore de dependências exata de desenvolvimento.
 
 ## Estrutura do Projeto
 
+```text
 projeto_api/
 ├── manage.py
 ├── requirements.txt
 ├── silvertech/
-│   ├── init.py
+│   ├── celery.py          # Instância do motor de filas assíncronas
 │   ├── settings.py
-│   ├── urls.py
-│   ├── asgi.py
+│   ├── asgi.py            # Roteamento ASGI HTTP e Tempo Real
 │   └── wsgi.py
 ├── core/
-│   ├── models.py          # Implementação do BaseModel (UUID e Timestamps)
-│   └── ...
+│   └── models.py          # Implementação do BaseModel (UUID e Timestamps)
 ├── workspaces/
-│   ├── models.py          # Entidades Workspace e Member
-│   ├── views.py
-│   └── urls.py
+│   └── models.py          # Entidades Workspace e Member
 ├── crm/
 │   ├── models.py          # Contact, Lead e Organization
-│   ├── mixins.py          # WorkspaceScopedQuerysetMixin (Segurança Multi-tenant)
-│   ├── pagination.py      # CRMCursorPagination (Rolagem infinita de alta performance)
-│   └── views.py
+│   ├── mixins.py          # Segurança Multi-tenant
+│   └── pagination.py      # Rolagem infinita de alta performance
 └── omnichannel/
-├── models.py          # Conversation e Message
-├── serializers.py     # Otimizações de payloads para a Inbox
-├── signals.py         # Gatilho automático de SSE no salvamento de mensagens
-├── channelmanager.py  # WorkspaceChannelManager (Segurança de canais)
-└── views.py
+    ├── models.py          # Conversation e Message
+    ├── serializers.py     # Otimizações de payloads para a Inbox
+    ├── signals.py         # Gatilho automático de SSE no banco
+    ├── services.py        # Handlers de lógica de negócio e extração da Meta
+    ├── tasks.py           # Tarefas do Celery para processamento de Webhooks
+    ├── channelmanager.py  # Segurança de canais de tempo real
+    └── views.py           # WebhookAPIView e ConversationViewSet
 
 ## Diagrama de Banco de Dados
 
@@ -142,3 +141,9 @@ Siga as etapas abaixo para configurar a arquitetura localmente.
         uvicorn silvertech.asgi:application --reload --host 0.0.0.0 --port 8000
 
   "Atenção: Como o projeto utiliza Django Channels e streaming ativo via protocolo ASGI, não utilize o comando python manage.py runserver, pois ele impossibilitará a execução do fluxo em tempo real (SSE)."
+
+
+7. **Inicie o Background Worker do Celery (Terminal 2):**
+   
+    # Em sistemas Windows, utilize a flag -P solo:
+        celery -A silvertech worker -l info -P solo

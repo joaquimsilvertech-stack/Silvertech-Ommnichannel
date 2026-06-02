@@ -8,9 +8,14 @@ from .serializers import MessageSerializer
 
 @receiver(post_save, sender=Message)
 def broadcast_message_event(sender, instance: Message, created: bool, **kwargs) -> None:
-    """Publica nova mensagem no canal SSE do workspace (Card #024)."""
+    """Publica mensagem ou atualização de status no canal SSE do workspace."""
+    update_fields = kwargs.get('update_fields')
     if not created:
-        return
+        if update_fields is None or 'status' not in update_fields:
+            return
+        event_type = 'message_status'
+    else:
+        event_type = 'message'
 
     workspace_id = (
         Conversation.objects.filter(pk=instance.conversation_id)
@@ -21,4 +26,4 @@ def broadcast_message_event(sender, instance: Message, created: bool, **kwargs) 
         return
 
     payload = MessageSerializer(instance).data
-    send_event(f'workspace-{workspace_id}', 'message', payload)
+    send_event(f'workspace-{workspace_id}', event_type, payload)
