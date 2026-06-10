@@ -13,10 +13,14 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 import os
 from datetime import timedelta
 from pathlib import Path
+import environ
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Inicializa o environ e carrega as variáveis do arquivo .env (Card #034)
+env = environ.Env()
+environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
@@ -27,7 +31,7 @@ SECRET_KEY = 'django-insecure-58c_ig*bz00^gt%!g+gey#r3(wt56rxj6h@q-pup2)77lzo0#9
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -93,8 +97,8 @@ CHANNEL_LAYERS = {
         'CONFIG': {
             'hosts': [
                 (
-                    os.environ.get('REDIS_HOST', '127.0.0.1'),
-                    int(os.environ.get('REDIS_PORT', '6379')),
+                    env('REDIS_HOST', default='127.0.0.1'),
+                    env.int('REDIS_PORT', default=6379),
                 ),
             ],
         },
@@ -103,16 +107,16 @@ CHANNEL_LAYERS = {
 
 # django-eventstream — publicação multiprocesso via Redis.
 EVENTSTREAM_REDIS = {
-    'host': os.environ.get('REDIS_HOST', '127.0.0.1'),
-    'port': int(os.environ.get('REDIS_PORT', '6379')),
-    'db': int(os.environ.get('REDIS_DB', '0')),
+    'host': env('REDIS_HOST', default='127.0.0.1'),
+    'port': env.int('REDIS_PORT', default=6379),
+    'db': env.int('REDIS_DB', default=0),
 }
 EVENTSTREAM_CHANNELMANAGER_CLASS = 'omnichannel.channelmanager.WorkspaceChannelManager'
 
 # Celery — broker/result backend Redis (Card #027).
-_CELERY_REDIS_URL = os.environ.get('CELERY_BROKER_URL', 'redis://127.0.0.1:6379/0')
+_CELERY_REDIS_URL = env('CELERY_BROKER_URL', default='redis://127.0.0.1:6379/0')
 CELERY_BROKER_URL = _CELERY_REDIS_URL
-CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', _CELERY_REDIS_URL)
+CELERY_RESULT_BACKEND = env('CELERY_RESULT_BACKEND', default=_CELERY_REDIS_URL)
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
@@ -125,12 +129,12 @@ CELERY_RESULT_SERIALIZER = 'json'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.environ.get('POSTGRES_DB', 'silvertech'),
-        'USER': os.environ.get('POSTGRES_USER', 'postgres'),
-        'PASSWORD': os.environ.get('POSTGRES_PASSWORD', '1234'),
-        'HOST': os.environ.get('POSTGRES_HOST', 'localhost'),
-        'PORT': os.environ.get('POSTGRES_PORT', '5432'),
-        'CONN_MAX_AGE': int(os.environ.get('POSTGRES_CONN_MAX_AGE', '60')),
+        'NAME': env('POSTGRES_DB', default='silvertech'),
+        'USER': env('POSTGRES_USER', default='postgres'),
+        'PASSWORD': env('POSTGRES_PASSWORD', default='1234'),
+        'HOST': env('POSTGRES_HOST', default='localhost'),
+        'PORT': env('POSTGRES_PORT', default='5432'),
+        'CONN_MAX_AGE': env.int('POSTGRES_CONN_MAX_AGE', default=60),
     }
 }
 
@@ -155,13 +159,15 @@ SIMPLE_JWT = {
 CORS_ALLOWED_ORIGINS = [
     'http://localhost:3000',
     'http://127.0.0.1:3000',
+    
 ]
 EVENTSTREAM_ALLOW_ORIGINS = CORS_ALLOWED_ORIGINS
 
-# WhatsApp Cloud API (Meta) — verificação do webhook (Card #025).
-WHATSAPP_VERIFY_TOKEN = os.environ.get('WHATSAPP_VERIFY_TOKEN', 'silvertech_token_secreto')
-WHATSAPP_ACCESS_TOKEN = os.environ.get('WHATSAPP_ACCESS_TOKEN', '')
-WHATSAPP_PHONE_NUMBER_ID = os.environ.get('WHATSAPP_PHONE_NUMBER_ID', '')
+# WhatsApp Cloud API (Meta) — Card #034 (Validação no boot)
+WHATSAPP_VERIFY_TOKEN = env('WHATSAPP_VERIFY_TOKEN', default='silvertech_token_secreto')
+# Como não há "default" configurado abaixo, o Django exigirá essas chaves no boot.
+WHATSAPP_ACCESS_TOKEN = env('WHATSAPP_ACCESS_TOKEN')
+WHATSAPP_PHONE_NUMBER_ID = env('WHATSAPP_PHONE_NUMBER_ID')
 
 
 # Password validation
