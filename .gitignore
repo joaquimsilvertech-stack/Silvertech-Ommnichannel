@@ -32,3 +32,7 @@ staticfiles/
 
 # Pasta do Cursor (algumas configurações locais)
 .cursor/
+
+.ngrok.exe/
+.ngrok/
+ngrok.exe
