@@ -145,4 +145,9 @@ Siga as etapas abaixo para configurar a arquitetura localmente.
 7. **Inicie o Background Worker do Celery (Terminal 2):**
    
     # Em sistemas Windows, utilize a flag -P solo:
-        celery -A silvertech worker -l info -P solo
+        celery -A silvertech worker --loglevel=info --pool=solo
+
+8. **Inicie o ngrok na porta 8080:**
+   
+        ngrok.exe http 8000
+        
