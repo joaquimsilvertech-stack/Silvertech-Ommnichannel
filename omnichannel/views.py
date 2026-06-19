@@ -1,7 +1,6 @@
 import logging
 
 import requests
-from django.conf import settings
 from django.http import HttpResponse
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import status, viewsets
@@ -29,27 +28,20 @@ logger = logging.getLogger(__name__)
 
 class WebhookAPIView(APIView):
     """
-    Webhook público para provedores externos (WhatsApp Cloud API / Meta).
+    Webhook publico para provedores externos (Evolution API).
 
-    GET: handshake de verificação exigido pela Meta.
+    GET: health-check simples.
     POST: enfileira upsert WhatsApp no Celery e responde 200 OK imediato (Card #027).
     """
 
     permission_classes = [AllowAny]
 
     def get(self, request: Request, channel_name: str) -> HttpResponse:
-        """Valida hub.verify_token e devolve hub.challenge em texto puro."""
-        mode = request.query_params.get('hub.mode')
-        verify_token = request.query_params.get('hub.verify_token')
-        challenge = request.query_params.get('hub.challenge')
-
-        if mode == 'subscribe' and verify_token == settings.WHATSAPP_VERIFY_TOKEN:
-            return HttpResponse(challenge, content_type='text/plain', status=200)
-
-        return HttpResponse(status=403)
+        """Health-check usado pela Evolution API."""
+        return HttpResponse(status=200)
 
     def post(self, request: Request, channel_name: str) -> Response:
-        """Ack imediato 200 OK — Meta penaliza timeouts."""
+        """Ack imediato 200 OK."""
         logger.info('Webhook [%s] payload: %s', channel_name, request.data)
 
         workspace_id = request.query_params.get('workspace')
@@ -96,7 +88,7 @@ class ConversationViewSet(WorkspaceScopedQuerysetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def reply(self, request: Request, pk: str | None = None) -> Response:
-        """Envia mensagem outbound (agente -> cliente) via WhatsApp Cloud API (Card #028)."""
+        """Envia mensagem outbound (agente -> cliente) via Evolution API."""
         input_serializer = MessageCreateSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
         body = input_serializer.validated_data['body']
@@ -110,24 +102,22 @@ class ConversationViewSet(WorkspaceScopedQuerysetMixin, viewsets.ModelViewSet):
             )
 
         try:
-            meta_response = send_whatsapp_message(phone, body)
+            evolution_response = send_whatsapp_message(phone, body)
         except requests.exceptions.RequestException:
             return Response(
                 {'detail': 'Falha ao enviar mensagem via WhatsApp.'},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        wamid: str | None = None
-        meta_messages = meta_response.get('messages', [])
-        if meta_messages and isinstance(meta_messages[0], dict):
-            wamid = meta_messages[0].get('id')
+        key = evolution_response.get('key', {})
+        external_id = key.get('id') if isinstance(key, dict) else None
 
         message = Message.objects.create(
             conversation=conversation,
             body=body,
             direction=Message.Direction.OUTBOUND,
             status=Message.Status.SENT,
-            external_id=wamid,
+            external_id=external_id,
         )
         output_serializer = MessageSerializer(message, context={'request': request})
         return Response(output_serializer.data, status=status.HTTP_201_CREATED)
