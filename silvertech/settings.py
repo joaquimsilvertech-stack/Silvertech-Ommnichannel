@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     # API, CORS e domínio
     'corsheaders',
     'rest_framework',
+    'drf_spectacular',
     'django_filters',
     'rest_framework_simplejwt',
     'core',
@@ -147,6 +148,14 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
     ),
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+}
+
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'API Silvertech Omnichannel',
+    'DESCRIPTION': 'Documentação da API do CRM Omnichannel (incluindo integração WhatsApp via Evolution API).',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
 }
 
 # Simple JWT — tempos de vida padrão para access/refresh (API stateless).
@@ -163,11 +172,11 @@ CORS_ALLOWED_ORIGINS = [
 ]
 EVENTSTREAM_ALLOW_ORIGINS = CORS_ALLOWED_ORIGINS
 
-# WhatsApp Cloud API (Meta) — Card #034 (Validação no boot)
-WHATSAPP_VERIFY_TOKEN = env('WHATSAPP_VERIFY_TOKEN', default='silvertech_token_secreto')
-# Como não há "default" configurado abaixo, o Django exigirá essas chaves no boot.
-WHATSAPP_ACCESS_TOKEN = env('WHATSAPP_ACCESS_TOKEN')
-WHATSAPP_PHONE_NUMBER_ID = env('WHATSAPP_PHONE_NUMBER_ID')
+# Evolution API (WhatsApp) - validacao no boot.
+EVOLUTION_API_URL = env('EVOLUTION_API_URL')
+# Como nao ha "default" configurado abaixo, o Django exigira essas chaves no boot.
+EVOLUTION_API_KEY = env('EVOLUTION_API_KEY')
+EVOLUTION_INSTANCE_NAME = env('EVOLUTION_INSTANCE_NAME')
 
 
 # Password validation
