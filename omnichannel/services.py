@@ -1,10 +1,10 @@
 """
-Regras de negócio do omnichannel (handlers de provedores externos).
+Regras de negocio do omnichannel (handlers de provedores externos).
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Iterator
+from typing import Any
 
 import requests
 from django.conf import settings
@@ -17,20 +17,26 @@ from .models import Conversation, Message
 logger = logging.getLogger(__name__)
 
 WHATSAPP_CHANNEL = 'whatsapp'
-WHATSAPP_GRAPH_API_VERSION = 'v19.0'
 
 
-def _iter_meta_values(payload: dict[str, Any]) -> Iterator[dict[str, Any]]:
-    """Percorre entry -> changes -> value do payload padrão da Meta."""
-    for entry in payload.get('entry', []):
-        if not isinstance(entry, dict):
-            continue
-        for change in entry.get('changes', []):
-            if not isinstance(change, dict):
-                continue
-            value = change.get('value')
-            if isinstance(value, dict):
-                yield value
+def _normalize_whatsapp_jid(remote_jid: str) -> str:
+    """Remove o sufixo do JID e devolve apenas o numero."""
+    return remote_jid.split('@', maxsplit=1)[0]
+
+
+def _extract_evolution_text(message: dict[str, Any]) -> str | None:
+    """Extrai texto simples dos formatos suportados pela Evolution."""
+    conversation = message.get('conversation')
+    if conversation:
+        return str(conversation)
+
+    extended_text = message.get('extendedTextMessage')
+    if isinstance(extended_text, dict):
+        text = extended_text.get('text')
+        if text:
+            return str(text)
+
+    return None
 
 
 def _upsert_inbound_message(
@@ -39,6 +45,7 @@ def _upsert_inbound_message(
     phone: str,
     contact_name: str,
     body: str,
+    external_id: str | None,
 ) -> None:
     """Cria ou reutiliza Contact/Conversation e persiste Message inbound."""
     with transaction.atomic():
@@ -74,120 +81,112 @@ def _upsert_inbound_message(
             body=body,
             direction=Message.Direction.INBOUND,
             status=Message.Status.DELIVERED,
+            external_id=external_id,
         )
 
 
-def _process_inbound_messages(value: dict[str, Any], workspace_id: str) -> None:
-    """Processa blocos `messages` do webhook (texto recebido)."""
-    messages = value.get('messages')
-    if not messages or not isinstance(messages, list):
+def _process_evolution_message(data: dict[str, Any], workspace_id: str) -> None:
+    """Processa um item `messages.upsert` da Evolution API."""
+    key = data.get('key')
+    if not isinstance(key, dict):
         return
 
-    contacts = value.get('contacts', [])
-    profile_name: str | None = None
-    if contacts and isinstance(contacts[0], dict):
-        profile = contacts[0].get('profile', {})
-        if isinstance(profile, dict):
-            profile_name = profile.get('name')
-
-    for message in messages:
-        if not isinstance(message, dict):
-            continue
-
-        phone = message.get('from')
-        if not phone:
-            continue
-
-        text_body = message.get('text', {})
-        if not isinstance(text_body, dict):
-            continue
-        body = text_body.get('body')
-        if not body:
-            continue
-
-        contact_name = profile_name or str(phone)
-        _upsert_inbound_message(
-            workspace_id=workspace_id,
-            phone=str(phone),
-            contact_name=contact_name,
-            body=body,
-        )
-
-
-def _process_message_statuses(value: dict[str, Any]) -> None:
-    """Atualiza status da Message a partir do webhook (sent/delivered/read/failed)."""
-    statuses = value.get('statuses')
-    if not statuses or not isinstance(statuses, list):
+    if key.get('fromMe') is True:
         return
 
-    valid_statuses = {choice.value for choice in Message.Status}
+    remote_jid = key.get('remoteJid')
+    if not remote_jid:
+        return
 
-    for status_item in statuses:
-        if not isinstance(status_item, dict):
-            continue
+    remote_jid = str(remote_jid)
+    if remote_jid.endswith('@g.us'):
+        return
 
-        message_id = status_item.get('id')
-        status_text = status_item.get('status')
-        if not message_id or not status_text:
-            continue
+    message = data.get('message')
+    if not isinstance(message, dict):
+        return
 
-        if status_text not in valid_statuses:
-            logger.warning(
-                'Status WhatsApp desconhecido: %s (wamid=%s)',
-                status_text,
-                message_id,
-            )
-            continue
+    body = _extract_evolution_text(message)
+    if not body:
+        return
 
-        try:
-            message = Message.objects.get(external_id=message_id)
-        except Message.DoesNotExist:
-            logger.warning('Message não encontrada para wamid=%s', message_id)
-            continue
+    phone = _normalize_whatsapp_jid(remote_jid)
+    contact_name = str(data.get('pushName') or phone)
+    external_id = key.get('id')
 
-        if message.status != status_text:
-            message.status = status_text
-            message.save(update_fields=['status', 'updated_at'])
+    _upsert_inbound_message(
+        workspace_id=workspace_id,
+        phone=phone,
+        contact_name=contact_name,
+        body=body,
+        external_id=str(external_id) if external_id else None,
+    )
+
+
+def _process_messages_upsert(payload: dict[str, Any], workspace_id: str) -> None:
+    """Processa evento `messages.upsert` da Evolution API."""
+    data = payload.get('data')
+    if isinstance(data, dict):
+        _process_evolution_message(data, workspace_id)
+        return
+
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                _process_evolution_message(item, workspace_id)
+
+
+def _process_connection_update(payload: dict[str, Any]) -> None:
+    """Loga mudancas de estado da conexao Evolution."""
+    data = payload.get('data')
+    state = data.get('state') if isinstance(data, dict) else None
+    instance = payload.get('instance')
+
+    if state == 'close':
+        logger.warning('Evolution desconectada (instance=%s, state=%s)', instance, state)
+        return
+
+    logger.info('Evolution connection.update (instance=%s, state=%s)', instance, state)
 
 
 def process_whatsapp_payload(payload: dict[str, Any], workspace_id: str) -> None:
-    """
-    Processa webhook WhatsApp Cloud API: mensagens inbound e status updates.
+    """Processa webhooks da Evolution API."""
+    event = payload.get('event')
 
-    Navega entry -> changes -> value.
-    """
-    for value in _iter_meta_values(payload):
-        _process_inbound_messages(value, workspace_id)
-        _process_message_statuses(value)
+    if event == 'messages.upsert':
+        _process_messages_upsert(payload, workspace_id)
+        return
+
+    if event == 'connection.update':
+        _process_connection_update(payload)
+        return
+
+    logger.info('Evento Evolution ignorado: %s', event)
 
 
 def send_whatsapp_message(phone: str, text: str) -> dict[str, Any]:
     """
-    Envia mensagem de texto via WhatsApp Cloud API (Card #028).
+    Envia mensagem de texto via Evolution API.
 
     Raises:
-        requests.exceptions.RequestException: falha de rede ou resposta HTTP da Meta.
+        requests.exceptions.RequestException: falha de rede ou resposta HTTP da Evolution.
     """
-    phone_number_id = settings.WHATSAPP_PHONE_NUMBER_ID
-    access_token = settings.WHATSAPP_ACCESS_TOKEN
+    api_url = settings.EVOLUTION_API_URL.rstrip('/')
+    api_key = settings.EVOLUTION_API_KEY
+    instance_name = settings.EVOLUTION_INSTANCE_NAME
 
-    if not phone_number_id or not access_token:
+    if not api_url or not api_key or not instance_name:
         raise requests.exceptions.RequestException(
-            'WHATSAPP_ACCESS_TOKEN ou WHATSAPP_PHONE_NUMBER_ID não configurados.',
+            'EVOLUTION_API_URL, EVOLUTION_API_KEY ou EVOLUTION_INSTANCE_NAME nao configurados.',
         )
 
-    url = (
-        f'https://graph.facebook.com/{WHATSAPP_GRAPH_API_VERSION}/'
-        f'{phone_number_id}/messages'
-    )
+    url = f'{api_url}/message/sendText/{instance_name}'
     payload = {
-        'messaging_product': 'whatsapp',
-        'to': phone,
-        'type': 'text',
-        'text': {'body': text},
+        'number': phone,
+        'text': text,
     }
     headers = {
-        'Authorization': f'Bearer {access_token}',
+        'apikey': api_key,
         'Content-Type': 'application/json',
     }
 
@@ -198,5 +197,5 @@ def send_whatsapp_message(phone: str, text: str) -> dict[str, Any]:
     except requests.exceptions.RequestException as exc:
         logger.error('Falha ao enviar WhatsApp para %s: %s', phone, exc, exc_info=True)
         if getattr(exc, 'response', None) is not None:
-            logger.error('Resposta Meta: %s', exc.response.text)
+            logger.error('Resposta Evolution: %s', exc.response.text)
         raise
