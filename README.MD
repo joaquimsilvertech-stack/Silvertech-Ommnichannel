@@ -147,7 +147,22 @@ Siga as etapas abaixo para configurar a arquitetura localmente.
     # Em sistemas Windows, utilize a flag -P solo:
         celery -A silvertech worker --loglevel=info --pool=solo
 
-8. **Inicie o ngrok na porta 8080:**
+8. **Front-end React + Tailwind**
    
-        ngrok.exe http 8000
-        
+        cd frontend
+        npm install
+        npm run dev
+
+    Rota do frontend
+    http://127.0.0.1:5173
+
+9. **Rotas do FrontEnd**
+
+http://127.0.0.1:5173/
+http://127.0.0.1:5173/contacts
+http://127.0.0.1:5173/leads
+http://127.0.0.1:5173/organizations
+http://127.0.0.1:5173/conversations
+http://127.0.0.1:5173/workspaces
+http://127.0.0.1:5173/members
+http://127.0.0.1:5173/invites
