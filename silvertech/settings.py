@@ -56,6 +56,8 @@ INSTALLED_APPS = [
     'workspaces',
     'crm',
     'omnichannel',
+    'tickets',
+    'automations',
 ]
 
 # Modelo de usuário customizado (login por e-mail, roles da plataforma).
