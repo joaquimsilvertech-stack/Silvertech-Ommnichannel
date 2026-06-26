@@ -7,6 +7,8 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from crm.mixins import WorkspaceScopedQuerysetMixin
+
 from .models import Member, Workspace, WorkspaceInvite
 from .serializers import (
     MemberSerializer,
@@ -25,10 +27,11 @@ def send_invite_email(invite: WorkspaceInvite) -> None:
     )
 
 
-class WorkspaceViewSet(viewsets.ModelViewSet):
+class WorkspaceViewSet(WorkspaceScopedQuerysetMixin, viewsets.ModelViewSet):
     queryset = Workspace.objects.all()
     serializer_class = WorkspaceSerializer
     permission_classes = [IsAuthenticated]
+    workspace_lookup = 'id'
 
     @action(detail=True, methods=['get'])
     def members(self, request, pk=None):
