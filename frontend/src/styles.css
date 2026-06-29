@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+
+  --bg-primary: #141619;
+  --bg-surface: #202326;
+  --bg-menu-active: #31343B;
+  --bg-hover: #32343A;
+  --bg-active: #484B53;
+  --bg-info: rgb(37, 40, 73);
+  --bg-success: rgb(36, 47, 39);
+
+  --text-primary: #D3D6DD;
+  --text-muted: #898B90;
+  --text-active: #FFFFFF;
+
+  --primary: #4C70DA;
+  --primary-soft: #557cf2;
+  --success: #0c8e63;
+
+  --border: #3D4047;
+  --border-strong: #424649;
+
+  --radius-control: 12px;
+  --radius-card: 16px;
+  --radius-pill: 30px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+  background: var(--bg-primary);
+}
+
+body {
+  min-height: 100%;
+  margin: 0;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 24px;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+::selection {
+  background: rgba(76, 112, 218, 0.45);
+  color: var(--text-active);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-primary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-active);
+  border-radius: 999px;
+  border: 2px solid var(--bg-primary);
+}

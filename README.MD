@@ -142,3 +142,27 @@ Siga as etapas abaixo para configurar a arquitetura localmente.
 
   "Atenção: Como o projeto utiliza Django Channels e streaming ativo via protocolo ASGI, não utilize o comando python manage.py runserver, pois ele impossibilitará a execução do fluxo em tempo real (SSE)."
 
+7. **Inicie o Background Worker do Celery (Terminal 2):**
+   
+    # Em sistemas Windows, utilize a flag -P solo:
+        celery -A silvertech worker --loglevel=info --pool=solo
+
+8. **Front-end React + Tailwind**
+   
+        cd frontend
+        npm install
+        npm run dev
+
+    Rota do frontend
+    http://127.0.0.1:5173
+
+9. **Rotas do FrontEnd**
+
+http://127.0.0.1:5173/
+http://127.0.0.1:5173/contacts
+http://127.0.0.1:5173/leads
+http://127.0.0.1:5173/organizations
+http://127.0.0.1:5173/conversations
+http://127.0.0.1:5173/workspaces
+http://127.0.0.1:5173/members
+http://127.0.0.1:5173/invites

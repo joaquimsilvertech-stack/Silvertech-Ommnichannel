@@ -35,6 +35,7 @@ class Conversation(BaseModel):
         default=Status.OPEN,
         db_index=True,
     )
+    is_human_handoff = models.BooleanField(default=False, db_index=True)
 
     class Meta:
         ordering = ('-created_at',)

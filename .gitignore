@@ -30,6 +30,10 @@ staticfiles/
 # Logs de erro
 *.log
 
+# Front-end
+node_modules/
+dist/
+
 # Pasta do Cursor (algumas configurações locais)
 .cursor/
 
