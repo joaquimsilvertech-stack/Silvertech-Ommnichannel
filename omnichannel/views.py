@@ -76,7 +76,11 @@ class ConversationViewSet(WorkspaceScopedQuerysetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=['get'])
     def messages(self, request: Request, pk: str | None = None) -> Response:
         conversation = self.get_object()
-        queryset = conversation.messages.order_by('-created_at')
+        queryset = conversation.messages.select_related(
+            'conversation',
+            'conversation__contact',
+            'conversation__workspace',
+        ).order_by('-created_at')
 
         page = self.paginate_queryset(queryset)
         if page is not None:

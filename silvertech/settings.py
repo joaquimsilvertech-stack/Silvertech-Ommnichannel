@@ -14,6 +14,8 @@ import os
 from datetime import timedelta
 from pathlib import Path
 import environ
+import sentry_sdk
+from sentry_sdk.integrations.django import DjangoIntegration
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -53,7 +55,7 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'core',
     'workspaces',
-    'crm',
+    'crm.apps.CrmConfig',
     'omnichannel',
 ]
 
@@ -113,6 +115,21 @@ EVENTSTREAM_REDIS = {
     'db': env.int('REDIS_DB', default=0),
 }
 EVENTSTREAM_CHANNELMANAGER_CLASS = 'omnichannel.channelmanager.WorkspaceChannelManager'
+
+# Cache Redis para endpoints pesados (analytics/dashboard).
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+        'LOCATION': env(
+            'REDIS_CACHE_URL',
+            default=(
+                f"redis://{env('REDIS_HOST', default='127.0.0.1')}:"
+                f"{env.int('REDIS_PORT', default=6379)}/"
+                f"{env.int('REDIS_DB', default=0)}"
+            ),
+        ),
+    },
+}
 
 # Celery — broker/result backend Redis (Card #027).
 _CELERY_REDIS_URL = env('CELERY_BROKER_URL', default='redis://127.0.0.1:6379/0')
@@ -216,3 +233,27 @@ USE_TZ = True
 STATIC_URL = 'static/'
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Sentry - monitoramento de erros e performance.
+SENTRY_DSN = os.getenv('SENTRY_DSN')
+
+if SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[
+            DjangoIntegration(),
+        ],
+        traces_sample_rate=1.0,
+        profiles_sample_rate=1.0,
+    )
+
+# django-debug-toolbar - apenas em ambiente local/debug.
+if DEBUG:
+    INSTALLED_APPS += [
+        'debug_toolbar',
+    ]
+    MIDDLEWARE.insert(0, 'debug_toolbar.middleware.DebugToolbarMiddleware')
+    INTERNAL_IPS = [
+        '127.0.0.1',
+        'localhost',
+    ]

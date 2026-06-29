@@ -36,3 +36,15 @@ staticfiles/
 .ngrok.exe/
 .ngrok/
 ngrok.exe
+
+# Ignorar dependencias e builds do Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.package-lock.json
+
+# Ignorar ambientes virtuais e cache do Backend Python (caso ainda nao tenha)
+venv/
+__pycache__/
+*.pyc
+.env
+.coverage
