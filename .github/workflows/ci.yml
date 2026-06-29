@@ -50,11 +50,13 @@ jobs:
       REDIS_HOST: localhost
       REDIS_PORT: "6379"
       REDIS_DB: "0"
+      REDIS_CACHE_URL: redis://localhost:6379/0
       CELERY_BROKER_URL: redis://localhost:6379/0
       CELERY_RESULT_BACKEND: redis://localhost:6379/0
       EVOLUTION_API_URL: http://localhost:8080
       EVOLUTION_API_KEY: test-evolution-key
       EVOLUTION_INSTANCE_NAME: silvertech_whatsapp
+      SENTRY_DSN: ""
 
     steps:
       - name: Checkout

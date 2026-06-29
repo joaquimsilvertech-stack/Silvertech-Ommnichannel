@@ -53,9 +53,12 @@ def test_evolution_webhook_creates_inbound_message_and_triggers_flow(
     def run_webhook_task(payload_arg, workspace_id_arg):
         process_whatsapp_payload(payload_arg, workspace_id_arg)
 
-    with patch(
-        'omnichannel.views.process_whatsapp_webhook_task.delay',
-        side_effect=run_webhook_task,
+    with (
+        patch(
+            'omnichannel.views.process_whatsapp_webhook_task.delay',
+            side_effect=run_webhook_task,
+        ),
+        patch('omnichannel.signals.send_event'),
     ):
         response = api_client.post(
             f'/api/omnichannel/webhooks/whatsapp/?workspace={tenant_workspace.id}',

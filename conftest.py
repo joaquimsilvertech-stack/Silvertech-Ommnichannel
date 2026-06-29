@@ -8,6 +8,17 @@ from workspaces.factories import MemberFactory, UserFactory, WorkspaceFactory
 from workspaces.models import Member, Workspace
 
 
+@pytest.fixture(autouse=True)
+def use_locmem_cache(settings):
+    """Evita dependencia de Redis nos testes unitarios."""
+    settings.CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'test-cache',
+        },
+    }
+
+
 @pytest.fixture
 def db_setup(db):
     """Ativa o banco de teste para fixtures que persistem dados."""
