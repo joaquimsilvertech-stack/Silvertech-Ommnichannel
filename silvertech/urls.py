@@ -32,6 +32,8 @@ urlpatterns = [
     path('api/crm/', include('crm.urls')),
     path('api/workspaces/', include('workspaces.urls')),
     path('api/omnichannel/', include('omnichannel.urls')),
+    path('api/tickets/', include('tickets.urls')),
+    path('api/automations/', include('automations.urls')),
 ]
 
 if settings.DEBUG:
