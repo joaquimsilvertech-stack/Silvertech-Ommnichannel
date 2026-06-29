@@ -5,3 +5,6 @@ class CrmConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
     name = 'crm'
     verbose_name = 'SilverTech Omnichannel — CRM'
+
+    def ready(self):
+        import crm.signals  # noqa: F401
