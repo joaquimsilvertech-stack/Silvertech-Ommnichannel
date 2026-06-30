@@ -6,6 +6,7 @@ Login por e-mail evita duplicidade de identificadores e alinha com fluxos B2B.
 """
 import uuid
 
+from django.conf import settings
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.db import models
 
@@ -82,3 +83,54 @@ class CustomUser(AbstractUser):
 
     def __str__(self) -> str:
         return self.email
+
+
+class AuditLog(BaseModel):
+    """Trilha de auditoria multi-tenant para alteracoes sensiveis."""
+
+    class Action(models.TextChoices):
+        CREATE = 'CREATE', 'Create'
+        UPDATE = 'UPDATE', 'Update'
+        DELETE = 'DELETE', 'Delete'
+
+    workspace = models.ForeignKey(
+        'workspaces.Workspace',
+        on_delete=models.CASCADE,
+        related_name='audit_logs',
+        db_index=True,
+    )
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='audit_logs',
+        db_index=True,
+    )
+    action = models.CharField(
+        max_length=16,
+        choices=Action.choices,
+        db_index=True,
+    )
+    model_name = models.CharField(max_length=128, db_index=True)
+    object_id = models.CharField(max_length=64, db_index=True)
+    object_repr = models.CharField(max_length=255, blank=True)
+    before = models.JSONField(null=True, blank=True)
+    after = models.JSONField(null=True, blank=True)
+    changes = models.JSONField(null=True, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.TextField(blank=True)
+    request_id = models.CharField(max_length=128, blank=True, db_index=True)
+
+    class Meta:
+        ordering = ('-created_at',)
+        indexes = [
+            models.Index(fields=['workspace', '-created_at']),
+            models.Index(fields=['workspace', 'action']),
+            models.Index(fields=['workspace', 'model_name']),
+        ]
+        verbose_name = 'audit log'
+        verbose_name_plural = 'audit logs'
+
+    def __str__(self) -> str:
+        return f'{self.action} {self.model_name} {self.object_id}'

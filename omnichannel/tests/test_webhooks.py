@@ -30,6 +30,7 @@ def test_evolution_webhook_creates_inbound_message_and_triggers_flow(
         contact=contact,
         channel='whatsapp',
         status=Conversation.Status.OPEN,
+        is_human_handoff=False,
     )
     flow = Flow.objects.create(
         workspace=tenant_workspace,
