@@ -53,10 +53,12 @@ INSTALLED_APPS = [
     'drf_spectacular',
     'django_filters',
     'rest_framework_simplejwt',
-    'core',
+    'core.apps.CoreConfig',
     'workspaces',
     'crm.apps.CrmConfig',
     'omnichannel',
+    'tickets',
+    'automations',
 ]
 
 # Modelo de usuário customizado (login por e-mail, roles da plataforma).
@@ -69,6 +71,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'core.middleware.AuditRequestMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
