@@ -13,10 +13,11 @@ class ContactFactory(factory.django.DjangoModelFactory):
 
     workspace = factory.SubFactory(WorkspaceFactory)
     name = factory.Faker('name')
-    phone = factory.Sequence(lambda n: f'551199999{n:04d}')
-    email = factory.Sequence(lambda n: f'contact{n}@example.com')
+    phone = factory.Faker('phone_number')
+    email = factory.Faker('email')
+    channel_id = factory.Sequence(lambda n: f'whatsapp-{n}')
     contact_type = Contact.ContactType.LEAD
-    custom_attributes = factory.LazyFunction(dict)
+    custom_attributes = factory.Dict({})
 
 
 class LeadFactory(factory.django.DjangoModelFactory):
@@ -26,9 +27,9 @@ class LeadFactory(factory.django.DjangoModelFactory):
     contact = factory.SubFactory(ContactFactory)
     status = Lead.Status.NEW
     score = 0
-    source = 'Manual'
+    source = 'Teste automatizado'
     assigned_to = factory.SubFactory(UserFactory)
-    notes = ''
+    notes = factory.Faker('sentence')
 
 
 class OrganizationFactory(factory.django.DjangoModelFactory):

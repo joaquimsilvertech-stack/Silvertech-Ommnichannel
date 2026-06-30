@@ -14,6 +14,14 @@ class Workspace(BaseModel):
 
     name = models.CharField(max_length=255, db_index=True)
     slug = models.SlugField(max_length=128, unique=True, db_index=True)
+    ai_system_prompt = models.TextField(
+        blank=True,
+        null=True,
+        help_text=(
+            'Prompt de sistema que define a personalidade e as regras do '
+            'assistente de IA para este workspace.'
+        ),
+    )
     users = models.ManyToManyField(
         settings.AUTH_USER_MODEL,
         through='Member',

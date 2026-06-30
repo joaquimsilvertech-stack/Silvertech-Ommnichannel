@@ -41,6 +41,8 @@ ALLOWED_HOSTS = ['*']
 INSTALLED_APPS = [
     'channels',
     'django_eventstream',
+    # Core must precede django.contrib.admin so app template overrides can theme /admin/.
+    'core',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -234,6 +236,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 

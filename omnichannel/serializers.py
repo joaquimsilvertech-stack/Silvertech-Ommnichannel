@@ -43,6 +43,7 @@ class ConversationSerializer(serializers.ModelSerializer):
             'contact_data',
             'channel',
             'status',
+            'is_human_handoff',
             'created_at',
             'updated_at',
         )

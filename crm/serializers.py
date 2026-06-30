@@ -60,6 +60,17 @@ class ContactSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('Sem acesso a este workspace.')
         return workspace
 
+    def validate_phone(self, value):
+        if not value:
+            return value
+
+        allowed_chars = set('0123456789+() -')
+        if not any(char.isdigit() for char in value) or any(
+            char not in allowed_chars for char in value
+        ):
+            raise serializers.ValidationError('Telefone em formato invalido.')
+        return value
+
     def validate(self, attrs):
         if self.instance is None and 'workspace' not in attrs:
             raise serializers.ValidationError(
