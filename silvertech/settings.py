@@ -55,6 +55,7 @@ INSTALLED_APPS = [
     'drf_spectacular',
     'django_filters',
     'rest_framework_simplejwt',
+    'core.apps.CoreConfig',
     'workspaces',
     'crm.apps.CrmConfig',
     'omnichannel',
@@ -72,6 +73,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'core.middleware.AuditRequestMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
