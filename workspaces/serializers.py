@@ -13,6 +13,7 @@ class WorkspaceSerializer(serializers.ModelSerializer):
             'id',
             'name',
             'slug',
+            'ai_system_prompt',
             'created_at',
             'updated_at',
         )

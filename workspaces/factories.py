@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import factory
 from django.contrib.auth import get_user_model
+from django.utils.text import slugify
 
 from .models import Member, Workspace, WorkspaceInvite
 
@@ -18,12 +19,14 @@ class UserFactory(factory.django.DjangoModelFactory):
     first_name = factory.Faker('first_name')
     last_name = factory.Faker('last_name')
     role = User.Role.AGENT
+    is_active = True
 
     @factory.post_generation
     def password(self, create, extracted, **kwargs):
-        self.set_password(extracted or 'test-pass-123')
+        raw_password = extracted or 'testpass123'
+        self.set_password(raw_password)
         if create:
-            self.save()
+            self.save(update_fields=['password'])
 
 
 class WorkspaceFactory(factory.django.DjangoModelFactory):
@@ -31,16 +34,21 @@ class WorkspaceFactory(factory.django.DjangoModelFactory):
         model = Workspace
 
     name = factory.Sequence(lambda n: f'Workspace {n}')
-    slug = factory.Sequence(lambda n: f'workspace-{n}')
+    slug = factory.LazyAttribute(lambda obj: slugify(obj.name))
+    ai_system_prompt = 'Você é um assistente virtual prestativo da Silvertech.'
 
 
 class MemberFactory(factory.django.DjangoModelFactory):
     class Meta:
         model = Member
+        django_get_or_create = ('workspace', 'user')
 
     workspace = factory.SubFactory(WorkspaceFactory)
     user = factory.SubFactory(UserFactory)
     role = Member.Role.OWNER
+
+
+MembershipFactory = MemberFactory
 
 
 class WorkspaceInviteFactory(factory.django.DjangoModelFactory):
