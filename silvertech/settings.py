@@ -68,6 +68,7 @@ AUTH_USER_MODEL = 'core.CustomUser'
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'csp.middleware.CSPMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -273,3 +274,25 @@ if DEBUG:
         '127.0.0.1',
         'localhost',
     ]
+
+# Security headers / OWASP hardening.
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_BROWSER_XSS_FILTER = True
+
+# Content Security Policy base para API, Swagger UI e front-end local.
+CSP_DEFAULT_SRC = ("'none'",)
+CSP_STYLE_SRC = ("'self'", "'unsafe-inline'")
+CSP_SCRIPT_SRC = ("'self'", "'unsafe-inline'")
+CSP_IMG_SRC = ("'self'", 'data:')
+CSP_FONT_SRC = ("'self'",)
+CSP_CONNECT_SRC = ("'self'", 'http://localhost:3000', 'http://127.0.0.1:3000')
+CONTENT_SECURITY_POLICY = {
+    'DIRECTIVES': {
+        'default-src': CSP_DEFAULT_SRC,
+        'style-src': CSP_STYLE_SRC,
+        'script-src': CSP_SCRIPT_SRC,
+        'img-src': CSP_IMG_SRC,
+        'font-src': CSP_FONT_SRC,
+        'connect-src': CSP_CONNECT_SRC,
+    },
+}
