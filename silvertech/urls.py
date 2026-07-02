@@ -20,14 +20,23 @@ from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
+
+class ThrottledTokenObtainPairView(TokenObtainPairView):
+    throttle_scope = 'auth'
+
+
+class ThrottledTokenRefreshView(TokenRefreshView):
+    throttle_scope = 'auth'
+
+
 urlpatterns = [
     path('admin/', admin.site.urls),
     # Documentação da API (Swagger UI)
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/schema/swagger-ui/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
     # Autenticação JWT (par access + refresh) para consumo pela API REST.
-    path('api/auth/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
-    path('api/auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('api/auth/token/', ThrottledTokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('api/auth/token/refresh/', ThrottledTokenRefreshView.as_view(), name='token_refresh'),
     path('api/', include('core.urls')),
     path('api/crm/', include('crm.urls')),
     path('api/workspaces/', include('workspaces.urls')),

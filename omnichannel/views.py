@@ -35,6 +35,7 @@ class WebhookAPIView(APIView):
     """
 
     permission_classes = [AllowAny]
+    throttle_scope = 'webhook'
 
     def get(self, request: Request, channel_name: str) -> HttpResponse:
         """Health-check usado pela Evolution API."""
