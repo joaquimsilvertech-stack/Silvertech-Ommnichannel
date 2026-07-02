@@ -55,7 +55,6 @@ INSTALLED_APPS = [
     'drf_spectacular',
     'django_filters',
     'rest_framework_simplejwt',
-    'core.apps.CoreConfig',
     'workspaces',
     'crm.apps.CrmConfig',
     'omnichannel',
