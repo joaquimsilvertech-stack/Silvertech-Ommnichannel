@@ -246,7 +246,14 @@ def send_whatsapp_message(phone: str, text: str) -> dict[str, Any]:
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as exc:
-        logger.error('Falha ao enviar WhatsApp para %s: %s', phone, exc, exc_info=True)
-        if getattr(exc, 'response', None) is not None:
-            logger.error('Resposta Evolution com status %s', exc.response.status_code)
+        response = getattr(exc, 'response', None)
+        logger.error(
+            'Falha no envio pela Evolution API',
+            extra={
+                'operation': 'send_whatsapp_message',
+                'status_code': getattr(response, 'status_code', None),
+                'exception_type': type(exc).__name__,
+                'instance_name': instance_name,
+            },
+        )
         raise

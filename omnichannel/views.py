@@ -45,20 +45,26 @@ class WebhookAPIView(APIView):
         """Ack imediato 200 OK."""
         workspace_id = request.query_params.get('workspace')
         logger.info(
-            'Webhook recebido (channel=%s, workspace=%s, event=%s)',
-            channel_name,
-            workspace_id or '',
-            request.data.get('event') if isinstance(request.data, dict) else '',
+            'Webhook recebido',
+            extra={
+                'channel': channel_name,
+                'event': request.data.get('event') if isinstance(request.data, dict) else '',
+                'workspace_id': str(workspace_id or ''),
+                'method': request.method,
+                'has_payload': bool(request.data),
+            },
         )
         if workspace_id and channel_name == 'whatsapp':
             try:
                 process_whatsapp_webhook_task.delay(request.data, workspace_id)
             except Exception as exc:
                 logger.error(
-                    'Erro ao enfileirar webhook WhatsApp (workspace=%s): %s',
-                    workspace_id,
-                    exc,
-                    exc_info=True,
+                    'Erro ao enfileirar webhook WhatsApp',
+                    extra={
+                        'workspace_id': str(workspace_id),
+                        'channel': channel_name,
+                        'exception_type': type(exc).__name__,
+                    },
                 )
 
         return Response({'status': 'received'}, status=status.HTTP_200_OK)

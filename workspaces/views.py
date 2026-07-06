@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import timedelta
 
@@ -8,6 +9,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from crm.mixins import WorkspaceScopedQuerysetMixin
+from core.sanitization import mask_email
 
 from .models import Member, Workspace, WorkspaceInvite
 from .serializers import (
@@ -16,13 +18,20 @@ from .serializers import (
     WorkspaceSerializer,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def send_invite_email(invite: WorkspaceInvite) -> None:
     """Mock de envio — Sprint 4 integrará Resend/SMTP."""
-    print(
-        f'[MOCK EMAIL] Convite para {invite.email} | '
-        f'workspace={invite.workspace.name} | '
-        f'expira em {invite.expires_at.isoformat()}',
+    logger.info(
+        'Convite de workspace criado',
+        extra={
+            'workspace_id': str(invite.workspace_id),
+            'invite_id': str(invite.id),
+            'email': mask_email(invite.email),
+            'role': invite.role,
+            'expires_at': invite.expires_at.isoformat(),
+        },
     )
 
 
