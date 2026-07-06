@@ -55,6 +55,7 @@ INSTALLED_APPS = [
     'drf_spectacular',
     'django_filters',
     'rest_framework_simplejwt',
+    'encrypted_model_fields',
     'workspaces',
     'crm.apps.CrmConfig',
     'omnichannel',
@@ -210,6 +211,12 @@ EVOLUTION_API_URL = env('EVOLUTION_API_URL')
 # Como nao ha "default" configurado abaixo, o Django exigira essas chaves no boot.
 EVOLUTION_API_KEY = env('EVOLUTION_API_KEY')
 EVOLUTION_INSTANCE_NAME = env('EVOLUTION_INSTANCE_NAME')
+
+# Criptografia de campos sensiveis por tenant.
+FIELD_ENCRYPTION_KEY = env(
+    'FIELD_ENCRYPTION_KEY',
+    default='fK2z_V8QzK-wA_B8l5DkX9nU7s_T4eY9A2fV6j_N8wM=',
+)
 
 
 # Password validation

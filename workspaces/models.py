@@ -5,6 +5,7 @@ import uuid  # noqa: F401
 
 from django.conf import settings
 from django.db import models
+from encrypted_model_fields.fields import EncryptedCharField
 
 from core.models import BaseModel
 
@@ -35,6 +36,30 @@ class Workspace(BaseModel):
 
     def __str__(self) -> str:
         return self.name
+
+
+class WorkspaceAIConfig(BaseModel):
+    """Configuracao de IA isolada por workspace/tenant."""
+
+    workspace = models.OneToOneField(
+        Workspace,
+        on_delete=models.CASCADE,
+        related_name='ai_config',
+    )
+    is_active = models.BooleanField(default=False, db_index=True)
+    openai_api_key = EncryptedCharField(max_length=255, blank=True, null=True)
+    system_prompt = models.TextField(
+        default='Você é um assistente virtual prestativo. Seja conciso.',
+    )
+    model_name = models.CharField(max_length=64, default='gpt-4o-mini')
+
+    class Meta:
+        verbose_name = 'configuracao de IA do workspace'
+        verbose_name_plural = 'configuracoes de IA dos workspaces'
+
+    def __str__(self) -> str:
+        status = 'ativa' if self.is_active else 'inativa'
+        return f'IA {status} @ {self.workspace_id}'
 
 
 class Member(BaseModel):
