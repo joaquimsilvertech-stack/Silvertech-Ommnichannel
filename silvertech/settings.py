@@ -14,6 +14,7 @@ import os
 from datetime import timedelta
 from pathlib import Path
 import environ
+from django.core.exceptions import ImproperlyConfigured
 import sentry_sdk
 from sentry_sdk.integrations.django import DjangoIntegration
 
@@ -22,18 +23,35 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Inicializa o environ e carrega as variáveis do arquivo .env (Card #034)
 env = environ.Env()
-environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
+if os.environ.get('READ_DOT_ENV_FILE', 'true').lower() not in {'0', 'false', 'no'}:
+    environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
+
+
+def required_env(name: str) -> str:
+    """Le variavel obrigatoria sem expor seu conteudo em mensagens de erro."""
+    value = env(name, default=None)
+    if value in (None, ''):
+        raise ImproperlyConfigured(f'A variavel de ambiente {name} e obrigatoria.')
+    return value
+
+
+DJANGO_ENV = env('DJANGO_ENV', default='production').lower()
+IS_PRODUCTION = DJANGO_ENV == 'production'
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-58c_ig*bz00^gt%!g+gey#r3(wt56rxj6h@q-pup2)77lzo0#9'
+SECRET_KEY = required_env('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = env.bool('DEBUG', default=False)
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=[])
+if IS_PRODUCTION and (not ALLOWED_HOSTS or '*' in ALLOWED_HOSTS):
+    raise ImproperlyConfigured(
+        'ALLOWED_HOSTS deve ser configurado sem wildcard em producao.',
+    )
 
 
 # Application definition
@@ -106,8 +124,8 @@ CHANNEL_LAYERS = {
         'CONFIG': {
             'hosts': [
                 (
-                    env('REDIS_HOST', default='127.0.0.1'),
-                    env.int('REDIS_PORT', default=6379),
+                    required_env('REDIS_HOST'),
+                    env.int('REDIS_PORT'),
                 ),
             ],
         },
@@ -116,9 +134,9 @@ CHANNEL_LAYERS = {
 
 # django-eventstream — publicação multiprocesso via Redis.
 EVENTSTREAM_REDIS = {
-    'host': env('REDIS_HOST', default='127.0.0.1'),
-    'port': env.int('REDIS_PORT', default=6379),
-    'db': env.int('REDIS_DB', default=0),
+    'host': required_env('REDIS_HOST'),
+    'port': env.int('REDIS_PORT'),
+    'db': env.int('REDIS_DB'),
 }
 EVENTSTREAM_CHANNELMANAGER_CLASS = 'omnichannel.channelmanager.WorkspaceChannelManager'
 
@@ -126,21 +144,13 @@ EVENTSTREAM_CHANNELMANAGER_CLASS = 'omnichannel.channelmanager.WorkspaceChannelM
 CACHES = {
     'default': {
         'BACKEND': 'django.core.cache.backends.redis.RedisCache',
-        'LOCATION': env(
-            'REDIS_CACHE_URL',
-            default=(
-                f"redis://{env('REDIS_HOST', default='127.0.0.1')}:"
-                f"{env.int('REDIS_PORT', default=6379)}/"
-                f"{env.int('REDIS_DB', default=0)}"
-            ),
-        ),
+        'LOCATION': required_env('REDIS_CACHE_URL'),
     },
 }
 
 # Celery — broker/result backend Redis (Card #027).
-_CELERY_REDIS_URL = env('CELERY_BROKER_URL', default='redis://127.0.0.1:6379/0')
-CELERY_BROKER_URL = _CELERY_REDIS_URL
-CELERY_RESULT_BACKEND = env('CELERY_RESULT_BACKEND', default=_CELERY_REDIS_URL)
+CELERY_BROKER_URL = required_env('CELERY_BROKER_URL')
+CELERY_RESULT_BACKEND = required_env('CELERY_RESULT_BACKEND')
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
@@ -150,17 +160,23 @@ CELERY_RESULT_SERIALIZER = 'json'
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
 # PostgreSQL — variáveis de ambiente permitem 12-factor sem hardcode em produção.
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': env('POSTGRES_DB', default='silvertech'),
-        'USER': env('POSTGRES_USER', default='postgres'),
-        'PASSWORD': env('POSTGRES_PASSWORD', default='1234'),
-        'HOST': env('POSTGRES_HOST', default='localhost'),
-        'PORT': env('POSTGRES_PORT', default='5432'),
-        'CONN_MAX_AGE': env.int('POSTGRES_CONN_MAX_AGE', default=60),
+DATABASE_URL = env('DATABASE_URL', default=None)
+if DATABASE_URL:
+    DATABASES = {
+        'default': env.db('DATABASE_URL'),
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': required_env('POSTGRES_DB'),
+            'USER': required_env('POSTGRES_USER'),
+            'PASSWORD': required_env('POSTGRES_PASSWORD'),
+            'HOST': required_env('POSTGRES_HOST'),
+            'PORT': required_env('POSTGRES_PORT'),
+            'CONN_MAX_AGE': env.int('POSTGRES_CONN_MAX_AGE', default=60),
+        },
+    }
 
 # Django REST Framework — autenticação JWT por padrão nas views protegidas.
 REST_FRAMEWORK = {
@@ -199,11 +215,11 @@ SIMPLE_JWT = {
 }
 
 # CORS — origens do front-end em desenvolvimento (Card #004).
-CORS_ALLOWED_ORIGINS = [
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
-    
-]
+CORS_ALLOW_ALL_ORIGINS = env.bool('CORS_ALLOW_ALL_ORIGINS', default=False)
+CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[])
+CSRF_TRUSTED_ORIGINS = env.list('CSRF_TRUSTED_ORIGINS', default=[])
+if IS_PRODUCTION and CORS_ALLOW_ALL_ORIGINS:
+    raise ImproperlyConfigured('CORS_ALLOW_ALL_ORIGINS nao pode ser True em producao.')
 EVENTSTREAM_ALLOW_ORIGINS = CORS_ALLOWED_ORIGINS
 
 # Evolution API (WhatsApp) - validacao no boot.
@@ -213,10 +229,7 @@ EVOLUTION_API_KEY = env('EVOLUTION_API_KEY')
 EVOLUTION_INSTANCE_NAME = env('EVOLUTION_INSTANCE_NAME')
 
 # Criptografia de campos sensiveis por tenant.
-FIELD_ENCRYPTION_KEY = env(
-    'FIELD_ENCRYPTION_KEY',
-    default='fK2z_V8QzK-wA_B8l5DkX9nU7s_T4eY9A2fV6j_N8wM=',
-)
+FIELD_ENCRYPTION_KEY = required_env('FIELD_ENCRYPTION_KEY')
 
 
 # Password validation
@@ -262,6 +275,8 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 SENTRY_DSN = os.getenv('SENTRY_DSN')
 
 if SENTRY_DSN:
+    from core.sanitization import sentry_before_send
+
     sentry_sdk.init(
         dsn=SENTRY_DSN,
         integrations=[
@@ -269,6 +284,7 @@ if SENTRY_DSN:
         ],
         traces_sample_rate=1.0,
         profiles_sample_rate=1.0,
+        before_send=sentry_before_send,
     )
 
 # django-debug-toolbar - apenas em ambiente local/debug.
@@ -285,6 +301,16 @@ if DEBUG:
 # Security headers / OWASP hardening.
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_BROWSER_XSS_FILTER = True
+SECURE_SSL_REDIRECT = IS_PRODUCTION
+SESSION_COOKIE_SECURE = IS_PRODUCTION
+CSRF_COOKIE_SECURE = IS_PRODUCTION
+SECURE_HSTS_SECONDS = 31536000 if IS_PRODUCTION else 0
+SECURE_HSTS_INCLUDE_SUBDOMAINS = IS_PRODUCTION
+SECURE_HSTS_PRELOAD = IS_PRODUCTION
+X_FRAME_OPTIONS = 'DENY'
+SECURE_REFERRER_POLICY = 'same-origin'
+if IS_PRODUCTION:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 # Content Security Policy base para API, Swagger UI e front-end local.
 CSP_DEFAULT_SRC = ("'none'",)

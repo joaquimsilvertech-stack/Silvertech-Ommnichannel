@@ -166,3 +166,37 @@ http://127.0.0.1:5173/conversations
 http://127.0.0.1:5173/workspaces
 http://127.0.0.1:5173/members
 http://127.0.0.1:5173/invites
+
+## Configuracao Segura de Secrets
+
+Copie `.env.example` para `.env` apenas no ambiente local e preencha valores proprios. O arquivo `.env` nao deve ser versionado.
+
+Variaveis obrigatorias para iniciar Django web, Celery worker e comandos administrativos:
+
+- `SECRET_KEY`
+- `FIELD_ENCRYPTION_KEY`
+- `DJANGO_ENV`
+- `DEBUG`
+- `ALLOWED_HOSTS`
+- `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT` ou `DATABASE_URL`
+- `REDIS_HOST`, `REDIS_PORT`, `REDIS_DB`, `REDIS_CACHE_URL`
+- `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`
+- `EVOLUTION_API_URL`, `EVOLUTION_API_KEY`, `EVOLUTION_INSTANCE_NAME`
+
+Para gerar uma `SECRET_KEY` local segura:
+
+```bash
+python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
+```
+
+Nunca troque `FIELD_ENCRYPTION_KEY` sem um plano de rotacao. Essa chave descriptografa campos sensiveis ja gravados no banco, incluindo `WorkspaceAIConfig.openai_api_key`; alterar o valor sem migracao controlada torna esses dados ilegíveis.
+
+Em producao, forneca secrets por variaveis de ambiente do provedor, gerenciador de secrets ou mecanismo equivalente. Como evolucao recomendada, use AWS Secrets Manager ou Parameter Store para injetar `SECRET_KEY`, `FIELD_ENCRYPTION_KEY`, credenciais PostgreSQL, Redis, Evolution API e Sentry sem gravar valores em arquivos versionados.
+
+Antes de deploy:
+
+```bash
+python manage.py check
+python manage.py check --deploy
+pytest core/tests/ workspaces/tests/ omnichannel/tests/ -q
+```

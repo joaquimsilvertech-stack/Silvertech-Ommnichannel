@@ -248,5 +248,5 @@ def send_whatsapp_message(phone: str, text: str) -> dict[str, Any]:
     except requests.exceptions.RequestException as exc:
         logger.error('Falha ao enviar WhatsApp para %s: %s', phone, exc, exc_info=True)
         if getattr(exc, 'response', None) is not None:
-            logger.error('Resposta Evolution: %s', exc.response.text)
+            logger.error('Resposta Evolution com status %s', exc.response.status_code)
         raise

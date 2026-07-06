@@ -10,9 +10,9 @@ services:
     image: postgres:16-alpine
     container_name: silvertech_evolution_postgres
     environment:
-      - POSTGRES_USER=evolution
-      - POSTGRES_PASSWORD=evolution_senha_local
-      - POSTGRES_DB=evolution
+      - POSTGRES_USER=${EVOLUTION_POSTGRES_USER:?Set EVOLUTION_POSTGRES_USER}
+      - POSTGRES_PASSWORD=${EVOLUTION_POSTGRES_PASSWORD:?Set EVOLUTION_POSTGRES_PASSWORD}
+      - POSTGRES_DB=${EVOLUTION_POSTGRES_DB:?Set EVOLUTION_POSTGRES_DB}
     volumes:
       - evolution_postgres_data:/var/lib/postgresql/data
     restart: always
@@ -26,11 +26,11 @@ services:
       # Conexão e autenticação da API
       - SERVER_URL=http://localhost:8080
       - AUTHENTICATION_TYPE=apikey
-      - AUTHENTICATION_API_KEY=silvertech_chave_secreta_123
+      - AUTHENTICATION_API_KEY=${EVOLUTION_AUTHENTICATION_API_KEY:?Set EVOLUTION_AUTHENTICATION_API_KEY}
 
       # Banco de dados (persistência de instâncias/sessões)
       - DATABASE_PROVIDER=postgresql
-      - DATABASE_CONNECTION_URI=postgresql://evolution:evolution_senha_local@evolution-postgres:5432/evolution
+      - DATABASE_CONNECTION_URI=postgresql://${EVOLUTION_POSTGRES_USER:?Set EVOLUTION_POSTGRES_USER}:${EVOLUTION_POSTGRES_PASSWORD:?Set EVOLUTION_POSTGRES_PASSWORD}@evolution-postgres:5432/${EVOLUTION_POSTGRES_DB:?Set EVOLUTION_POSTGRES_DB}
 
       # Cache (Redis compartilhado, db index 1 — separado do Celery/Channels que usam db 0)
       - CACHE_REDIS_ENABLED=true

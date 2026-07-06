@@ -41,7 +41,12 @@ jobs:
     env:
       # Configuracoes Django e servicos locais do runner.
       SECRET_KEY: test-key
+      FIELD_ENCRYPTION_KEY: 7EbNIqb9tM4Y-Q_XuIrkum0iErg9vNNtf5aeSZgAUPs=
+      DJANGO_ENV: test
       DEBUG: "False"
+      ALLOWED_HOSTS: localhost,127.0.0.1,testserver
+      CORS_ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      CSRF_TRUSTED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
       POSTGRES_DB: silvertech_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres

@@ -22,7 +22,6 @@ def send_invite_email(invite: WorkspaceInvite) -> None:
     print(
         f'[MOCK EMAIL] Convite para {invite.email} | '
         f'workspace={invite.workspace.name} | '
-        f'token={invite.token} | '
         f'expira em {invite.expires_at.isoformat()}',
     )
 

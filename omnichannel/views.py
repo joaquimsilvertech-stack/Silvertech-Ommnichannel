@@ -43,9 +43,13 @@ class WebhookAPIView(APIView):
 
     def post(self, request: Request, channel_name: str) -> Response:
         """Ack imediato 200 OK."""
-        logger.info('Webhook [%s] payload: %s', channel_name, request.data)
-
         workspace_id = request.query_params.get('workspace')
+        logger.info(
+            'Webhook recebido (channel=%s, workspace=%s, event=%s)',
+            channel_name,
+            workspace_id or '',
+            request.data.get('event') if isinstance(request.data, dict) else '',
+        )
         if workspace_id and channel_name == 'whatsapp':
             try:
                 process_whatsapp_webhook_task.delay(request.data, workspace_id)
