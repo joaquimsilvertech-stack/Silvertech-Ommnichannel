@@ -45,7 +45,6 @@ class OpenAIAdapter(BaseAIProviderAdapter):
         self,
         *,
         model_name: str,
-        system_prompt: str,
         messages: list[dict[str, str]],
         settings: dict[str, Any],
     ) -> AIProviderResult:
@@ -88,6 +87,9 @@ def _validate_openai_settings(settings: dict[str, Any]) -> dict[str, Any]:
     unknown_settings = set(settings) - _ALLOWED_SETTINGS
     if unknown_settings:
         raise AIProviderInvalidRequestError('Settings OpenAI contem chaves nao suportadas.')
+
+    if settings.get('max_tokens') is not None and settings.get('max_completion_tokens') is not None:
+        raise AIProviderInvalidRequestError('Use apenas max_tokens ou max_completion_tokens.')
 
     validated: dict[str, Any] = {}
     for key, value in settings.items():

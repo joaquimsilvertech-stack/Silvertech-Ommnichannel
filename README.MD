@@ -205,9 +205,13 @@ Prompts podem variar por provider, e a edição futura deve acontecer pela API s
 
 `WorkspaceAIProviderConfig` define o provider ativo por workspace. A task de IA resolve esse provider pelo registry interno e chama o adapter correspondente, sem importar SDKs diretamente.
 
+`build_conversation_context_for_ai` monta o contexto completo da conversa, incluindo a mensagem `system` com o prompt oficial. Os adapters recebem apenas `messages` normalizadas e prontas para o SDK do provider; eles nao conhecem `Workspace`, `WorkspaceAIProviderConfig` ou qualquer model de configuracao, e nao adicionam, removem ou deduplicam prompts.
+
 Atualmente, somente `OpenAIAdapter` é funcional. `Anthropic` e `Google` permanecem apenas modelados e retornam provider não suportado até seus adapters serem implementados.
 
 Para adicionar um novo provider, crie um adapter, registre no provider registry, adicione o SDK mínimo necessário e cubra o fluxo com testes unitários e de task. Não existe fallback automático entre providers, e cada adapter recebe exclusivamente a credencial criptografada do workspace da conversa.
+
+No `OpenAIAdapter`, `max_tokens` e `max_completion_tokens` sao mutuamente exclusivos para evitar configuracoes ambiguas enviadas ao SDK.
 
 Antes de deploy:
 

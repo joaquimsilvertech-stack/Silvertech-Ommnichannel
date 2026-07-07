@@ -22,7 +22,6 @@ def generate_ai_reply(
     result = adapter.generate_response(
         model_name=model_name,
         messages=messages,
-        system_prompt=system_prompt,
         settings={},
     )
     return result.text

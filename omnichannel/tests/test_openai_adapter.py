@@ -71,7 +71,6 @@ def test_openai_adapter_sends_model_messages_and_allowed_settings() -> None:
         adapter = OpenAIAdapter(api_key='sk-openai-adapter')
         result = adapter.generate_response(
             model_name='gpt-4o-mini',
-            system_prompt='Prompt ja presente nas mensagens',
             messages=[
                 {'role': 'system', 'content': 'Prompt ja presente nas mensagens'},
                 {'role': 'user', 'content': 'Ola'},
@@ -109,21 +108,80 @@ def test_openai_adapter_sends_model_messages_and_allowed_settings() -> None:
     assert result.total_tokens == 18
 
 
-def test_openai_adapter_does_not_duplicate_system_prompt() -> None:
+def test_openai_adapter_forwards_messages_without_modification() -> None:
+    client, mock_create = _client_with_response()
+    messages = [
+        {'role': 'system', 'content': 'Prompt oficial'},
+        {'role': 'user', 'content': 'Ola'},
+    ]
+
+    with patch('omnichannel.ai.providers.openai.openai.OpenAI', return_value=client):
+        adapter = OpenAIAdapter(api_key='sk-openai-adapter')
+        adapter.generate_response(
+            model_name='gpt-4o-mini',
+            messages=messages,
+            settings={},
+        )
+
+    assert mock_create.call_args.kwargs['messages'] is messages
+
+
+@pytest.mark.parametrize(
+    ('setting_payload', 'expected_setting'),
+    [
+        ({'max_tokens': 100}, {'max_tokens': 100}),
+        ({'max_completion_tokens': 100}, {'max_completion_tokens': 100}),
+        ({'max_tokens': None, 'max_completion_tokens': 100}, {'max_completion_tokens': 100}),
+        ({'max_tokens': 100, 'max_completion_tokens': None}, {'max_tokens': 100}),
+    ],
+)
+def test_openai_adapter_accepts_single_token_limit_setting(setting_payload, expected_setting) -> None:
     client, mock_create = _client_with_response()
 
     with patch('omnichannel.ai.providers.openai.openai.OpenAI', return_value=client):
         adapter = OpenAIAdapter(api_key='sk-openai-adapter')
         adapter.generate_response(
             model_name='gpt-4o-mini',
-            system_prompt='Prompt oficial',
-            messages=[{'role': 'system', 'content': 'Prompt oficial'}],
-            settings={},
+            messages=[{'role': 'user', 'content': 'Ola'}],
+            settings=setting_payload,
         )
 
-    assert mock_create.call_args.kwargs['messages'] == [
-        {'role': 'system', 'content': 'Prompt oficial'},
-    ]
+    for key, value in expected_setting.items():
+        assert mock_create.call_args.kwargs[key] == value
+
+
+def test_openai_adapter_rejects_both_token_limit_settings() -> None:
+    client, mock_create = _client_with_response()
+
+    with patch('omnichannel.ai.providers.openai.openai.OpenAI', return_value=client):
+        adapter = OpenAIAdapter(api_key='sk-sensitive-key')
+        with pytest.raises(AIProviderInvalidRequestError) as exc_info:
+            adapter.generate_response(
+                model_name='gpt-4o-mini',
+                messages=[{'role': 'user', 'content': 'Ola'}],
+                settings={
+                    'max_tokens': 100,
+                    'max_completion_tokens': 100,
+                },
+            )
+
+    mock_create.assert_not_called()
+    assert 'sk-sensitive-key' not in str(exc_info.value)
+    assert '100' not in str(exc_info.value)
+
+
+def test_openai_adapter_rejects_system_prompt_argument() -> None:
+    client, _ = _client_with_response()
+
+    with patch('omnichannel.ai.providers.openai.openai.OpenAI', return_value=client):
+        adapter = OpenAIAdapter(api_key='sk-openai-adapter')
+        with pytest.raises(TypeError):
+            adapter.generate_response(
+                model_name='gpt-4o-mini',
+                system_prompt='Prompt fora do contrato',
+                messages=[{'role': 'user', 'content': 'Ola'}],
+                settings={},
+            )
 
 
 @pytest.mark.parametrize(
@@ -148,7 +206,6 @@ def test_openai_adapter_rejects_invalid_settings(setting_payload) -> None:
         with pytest.raises(AIProviderInvalidRequestError) as exc_info:
             adapter.generate_response(
                 model_name='gpt-4o-mini',
-                system_prompt='Prompt',
                 messages=[{'role': 'user', 'content': 'Ola'}],
                 settings=setting_payload,
             )
@@ -167,7 +224,6 @@ def test_openai_adapter_rejects_empty_text_response(content: str | None) -> None
         with pytest.raises(AIProviderInvalidResponseError):
             adapter.generate_response(
                 model_name='gpt-4o-mini',
-                system_prompt='Prompt',
                 messages=[{'role': 'user', 'content': 'Ola'}],
                 settings={},
             )
@@ -181,7 +237,6 @@ def test_openai_adapter_rejects_unexpected_response_shape() -> None:
         with pytest.raises(AIProviderInvalidResponseError):
             adapter.generate_response(
                 model_name='gpt-4o-mini',
-                system_prompt='Prompt',
                 messages=[{'role': 'user', 'content': 'Ola'}],
                 settings={},
             )
@@ -247,7 +302,6 @@ def test_openai_adapter_maps_sdk_errors(sdk_error, internal_error) -> None:
         with pytest.raises(internal_error) as exc_info:
             adapter.generate_response(
                 model_name='gpt-4o-mini',
-                system_prompt='Prompt',
                 messages=[{'role': 'user', 'content': 'Ola'}],
                 settings={},
             )

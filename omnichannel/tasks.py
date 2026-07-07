@@ -68,7 +68,6 @@ def process_ai_response(conversation_id: str) -> str | None:
         )
         result = adapter.generate_response(
             model_name=provider_config.model_name,
-            system_prompt=provider_config.system_prompt,
             messages=messages,
             settings=provider_config.settings or {},
         )

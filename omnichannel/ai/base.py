@@ -16,7 +16,6 @@ class BaseAIProviderAdapter(ABC):
         self,
         *,
         model_name: str,
-        system_prompt: str,
         messages: list[dict[str, str]],
         settings: dict[str, Any],
     ) -> AIProviderResult:

@@ -64,7 +64,6 @@ def test_process_ai_response_creates_outbound_message_and_sends_whatsapp() -> No
     )
     adapter.generate_response.assert_called_once_with(
         model_name='gpt-4o-mini',
-        system_prompt='Prompt do tenant Silvertech',
         messages=[
             {'role': 'system', 'content': 'Prompt do tenant Silvertech'},
             {'role': 'user', 'content': 'Quero atendimento por IA.'},
