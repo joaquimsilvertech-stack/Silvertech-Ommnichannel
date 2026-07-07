@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-import logging
-
-import openai
-
+from .ai.providers.openai import OpenAIAdapter
 from .models import Conversation
 from .services import build_conversation_context_for_ai
-
-logger = logging.getLogger(__name__)
 
 DEFAULT_OPENAI_MODEL = 'gpt-4o-mini'
 
@@ -18,21 +13,16 @@ def generate_ai_reply(
     api_key: str,
     model_name: str = DEFAULT_OPENAI_MODEL,
 ) -> str:
-    """Gera uma resposta de IA com base no historico recente da conversa."""
+    """DEPRECATED: wrapper legado; use Provider Registry nas tasks."""
     messages = build_conversation_context_for_ai(
         conversation,
         system_prompt=system_prompt,
     )
-
-    client = openai.OpenAI(api_key=api_key)
-    response = client.chat.completions.create(
-        model=model_name,
+    adapter = OpenAIAdapter(api_key=api_key)
+    result = adapter.generate_response(
+        model_name=model_name,
         messages=messages,
+        system_prompt=system_prompt,
+        settings={},
     )
-
-    reply = response.choices[0].message.content
-    if not reply:
-        logger.warning('OpenAI retornou resposta vazia (conversation_id=%s)', conversation.id)
-        return ''
-
-    return reply.strip()
+    return result.text

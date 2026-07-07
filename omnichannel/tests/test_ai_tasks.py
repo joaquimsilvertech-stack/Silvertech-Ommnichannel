@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
 from django.apps import apps
 
-from omnichannel.ai_service import DEFAULT_OPENAI_MODEL, generate_ai_reply
+from omnichannel.ai.exceptions import (
+    AIProviderAuthenticationError,
+    AIProviderInvalidResponseError,
+    AIProviderRateLimitError,
+)
+from omnichannel.ai.types import AIProviderResult
 from omnichannel.factories import ConversationFactory, MessageFactory
 from omnichannel.models import Message
 from omnichannel.tasks import process_ai_response
@@ -14,79 +19,36 @@ from workspaces.factories import WorkspaceAIProviderConfigFactory
 from workspaces.models import AIProvider
 
 
-def _openai_response(content: str):
-    return SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                message=SimpleNamespace(content=content),
-            ),
-        ],
+def _adapter(result_text: str = 'Resposta gerada pela IA.'):
+    adapter = MagicMock()
+    adapter.generate_response.return_value = AIProviderResult(
+        text=result_text,
+        provider=AIProvider.OPENAI,
+        model_name='gpt-4o-mini',
+        external_id='provider-result-id',
     )
-
-
-def _openai_client(content: str):
-    create = MagicMock(return_value=_openai_response(content))
-    client = SimpleNamespace(
-        chat=SimpleNamespace(
-            completions=SimpleNamespace(create=create),
-        ),
-    )
-    return client, create
-
-
-@pytest.mark.django_db
-def test_generate_ai_reply_sends_recent_history_to_openai() -> None:
-    conversation = ConversationFactory()
-    MessageFactory(
-        conversation=conversation,
-        direction=Message.Direction.INBOUND,
-        body='Ola, quais sao os planos?',
-    )
-    MessageFactory(
-        conversation=conversation,
-        direction=Message.Direction.OUTBOUND,
-        body='Temos planos mensais e anuais.',
-    )
-    client, mock_create = _openai_client('Claro, posso ajudar.')
-
-    with patch('omnichannel.ai_service.openai.OpenAI', return_value=client) as mock_openai:
-        reply = generate_ai_reply(
-            conversation,
-            'Prompt de sistema',
-            api_key='sk-test-key',
-            model_name=DEFAULT_OPENAI_MODEL,
-        )
-
-    assert reply == 'Claro, posso ajudar.'
-    mock_openai.assert_called_once_with(api_key='sk-test-key')
-    mock_create.assert_called_once()
-    kwargs = mock_create.call_args.kwargs
-    assert kwargs['model'] == DEFAULT_OPENAI_MODEL
-    assert kwargs['messages'] == [
-        {'role': 'system', 'content': 'Prompt de sistema'},
-        {'role': 'user', 'content': 'Ola, quais sao os planos?'},
-        {'role': 'assistant', 'content': 'Temos planos mensais e anuais.'},
-    ]
+    return adapter
 
 
 @pytest.mark.django_db
 def test_process_ai_response_creates_outbound_message_and_sends_whatsapp() -> None:
     conversation = ConversationFactory(contact__phone='5511999999999')
-    WorkspaceAIProviderConfigFactory(
+    provider_config = WorkspaceAIProviderConfigFactory(
         workspace=conversation.workspace,
         api_key='sk-workspace-key',
         system_prompt='Prompt do tenant Silvertech',
         model_name='gpt-4o-mini',
+        settings={'temperature': 0.2},
     )
     MessageFactory(
         conversation=conversation,
         direction=Message.Direction.INBOUND,
         body='Quero atendimento por IA.',
     )
-    client, mock_create = _openai_client('Resposta gerada pela IA.')
+    adapter = _adapter()
 
     with (
-        patch('omnichannel.ai_service.openai.OpenAI', return_value=client) as mock_openai,
+        patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter) as mock_registry,
         patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
     ):
         message_id = process_ai_response.run(str(conversation.id))
@@ -96,12 +58,19 @@ def test_process_ai_response_creates_outbound_message_and_sends_whatsapp() -> No
     assert message.direction == Message.Direction.OUTBOUND
     assert message.status == Message.Status.SENT
     assert message.body == 'Resposta gerada pela IA.'
-    mock_openai.assert_called_once_with(api_key='sk-workspace-key')
-    mock_create.assert_called_once()
-    assert mock_create.call_args.kwargs['messages'][0] == {
-        'role': 'system',
-        'content': 'Prompt do tenant Silvertech',
-    }
+    mock_registry.assert_called_once_with(
+        provider=provider_config.provider,
+        api_key='sk-workspace-key',
+    )
+    adapter.generate_response.assert_called_once_with(
+        model_name='gpt-4o-mini',
+        system_prompt='Prompt do tenant Silvertech',
+        messages=[
+            {'role': 'system', 'content': 'Prompt do tenant Silvertech'},
+            {'role': 'user', 'content': 'Quero atendimento por IA.'},
+        ],
+        settings={'temperature': 0.2},
+    )
     mock_send_whatsapp.assert_called_once_with('5511999999999', 'Resposta gerada pela IA.')
 
 
@@ -110,7 +79,7 @@ def test_process_ai_response_skips_human_handoff() -> None:
     conversation = ConversationFactory(is_human_handoff=True)
 
     with (
-        patch('omnichannel.ai_service.openai.OpenAI') as mock_openai,
+        patch('omnichannel.ai.registry.get_provider_adapter') as mock_registry,
         patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
     ):
         result = process_ai_response.run(str(conversation.id))
@@ -120,7 +89,7 @@ def test_process_ai_response_skips_human_handoff() -> None:
         conversation=conversation,
         direction=Message.Direction.OUTBOUND,
     ).exists()
-    mock_openai.assert_not_called()
+    mock_registry.assert_not_called()
     mock_send_whatsapp.assert_not_called()
 
 
@@ -134,13 +103,13 @@ def test_process_ai_response_skips_inactive_provider_config() -> None:
     )
 
     with (
-        patch('omnichannel.ai_service.openai.OpenAI') as mock_openai,
+        patch('omnichannel.ai.registry.get_provider_adapter') as mock_registry,
         patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
     ):
         result = process_ai_response.run(str(conversation.id))
 
     assert result is None
-    mock_openai.assert_not_called()
+    mock_registry.assert_not_called()
     mock_send_whatsapp.assert_not_called()
 
 
@@ -163,17 +132,20 @@ def test_process_ai_response_uses_only_current_workspace_provider_config() -> No
         direction=Message.Direction.INBOUND,
         body='Responder pelo workspace correto.',
     )
-    client, mock_create = _openai_client('Resposta do workspace correto.')
+    adapter = _adapter('Resposta do workspace correto.')
 
     with (
-        patch('omnichannel.ai_service.openai.OpenAI', return_value=client) as mock_openai,
+        patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter) as mock_registry,
         patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
     ):
         message_id = process_ai_response.run(str(conversation.id))
 
     assert message_id is not None
-    mock_openai.assert_called_once_with(api_key='sk-current-workspace-key')
-    assert mock_create.call_args.kwargs['messages'][0] == {
+    mock_registry.assert_called_once_with(
+        provider=AIProvider.OPENAI,
+        api_key='sk-current-workspace-key',
+    )
+    assert adapter.generate_response.call_args.kwargs['messages'][0] == {
         'role': 'system',
         'content': 'Prompt correto',
     }
@@ -195,25 +167,23 @@ def test_process_ai_response_ignores_workspace_ai_system_prompt() -> None:
         direction=Message.Direction.INBOUND,
         body='Use o prompt oficial.',
     )
-    client, mock_create = _openai_client('Resposta com prompt oficial.')
+    adapter = _adapter('Resposta com prompt oficial.')
 
     with (
-        patch('omnichannel.ai_service.openai.OpenAI', return_value=client),
+        patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter),
         patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
     ):
         message_id = process_ai_response.run(str(conversation.id))
 
     assert message_id is not None
-    assert mock_create.call_args.kwargs['messages'][0] == {
-        'role': 'system',
-        'content': 'PROMPT_OFICIAL_PROVIDER',
-    }
-    assert 'PROMPT_LEGADO_WORKSPACE' not in str(mock_create.call_args.kwargs['messages'])
+    messages = adapter.generate_response.call_args.kwargs['messages']
+    assert messages[0] == {'role': 'system', 'content': 'PROMPT_OFICIAL_PROVIDER'}
+    assert 'PROMPT_LEGADO_WORKSPACE' not in str(messages)
     mock_send_whatsapp.assert_called_once_with('5511666666666', 'Resposta com prompt oficial.')
 
 
 @pytest.mark.django_db
-def test_process_ai_response_ignores_non_openai_provider_for_now() -> None:
+def test_process_ai_response_unsupported_provider_does_not_create_or_send(caplog) -> None:
     conversation = ConversationFactory()
     WorkspaceAIProviderConfigFactory(
         workspace=conversation.workspace,
@@ -222,14 +192,18 @@ def test_process_ai_response_ignores_non_openai_provider_for_now() -> None:
     )
 
     with (
-        patch('omnichannel.ai_service.openai.OpenAI') as mock_openai,
+        caplog.at_level(logging.WARNING),
         patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
     ):
         result = process_ai_response.run(str(conversation.id))
 
     assert result is None
-    mock_openai.assert_not_called()
+    assert not Message.objects.filter(
+        conversation=conversation,
+        direction=Message.Direction.OUTBOUND,
+    ).exists()
     mock_send_whatsapp.assert_not_called()
+    assert 'sk-anthropic-test-key' not in caplog.text
 
 
 @pytest.mark.django_db
@@ -256,23 +230,24 @@ def test_process_ai_response_ignores_divergent_legacy_provider_config() -> None:
         direction=Message.Direction.INBOUND,
         body='Use somente provider config.',
     )
-    client, mock_create = _openai_client('Resposta via provider config.')
+    adapter = _adapter('Resposta via provider config.')
 
     with (
-        patch('omnichannel.ai_service.openai.OpenAI', return_value=client) as mock_openai,
+        patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter) as mock_registry,
         patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
     ):
         message_id = process_ai_response.run(str(conversation.id))
 
     assert message_id is not None
-    mock_openai.assert_called_once_with(api_key='sk-provider-key')
-    assert mock_create.call_args.kwargs['model'] == 'gpt-4o-mini'
-    assert mock_create.call_args.kwargs['messages'][0] == {
+    mock_registry.assert_called_once_with(provider=AIProvider.OPENAI, api_key='sk-provider-key')
+    assert adapter.generate_response.call_args.kwargs['model_name'] == 'gpt-4o-mini'
+    messages = adapter.generate_response.call_args.kwargs['messages']
+    assert messages[0] == {
         'role': 'system',
         'content': 'Prompt provider atual',
     }
-    assert 'Prompt legado que nao deve ser usado' not in str(mock_create.call_args.kwargs['messages'])
-    assert 'PROMPT_LEGADO_WORKSPACE' not in str(mock_create.call_args.kwargs['messages'])
+    assert 'Prompt legado que nao deve ser usado' not in str(messages)
+    assert 'PROMPT_LEGADO_WORKSPACE' not in str(messages)
     mock_send_whatsapp.assert_called_once_with('5511777777777', 'Resposta via provider config.')
 
 
@@ -289,16 +264,50 @@ def test_process_ai_response_with_empty_provider_prompt_does_not_send_empty_syst
         direction=Message.Direction.INBOUND,
         body='Sem prompt de sistema.',
     )
-    client, mock_create = _openai_client('Resposta sem system prompt.')
+    adapter = _adapter('Resposta sem system prompt.')
 
     with (
-        patch('omnichannel.ai_service.openai.OpenAI', return_value=client),
+        patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter),
         patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
     ):
         message_id = process_ai_response.run(str(conversation.id))
 
     assert message_id is not None
-    assert mock_create.call_args.kwargs['messages'] == [
+    assert adapter.generate_response.call_args.kwargs['messages'] == [
         {'role': 'user', 'content': 'Sem prompt de sistema.'},
     ]
     mock_send_whatsapp.assert_called_once_with('5511555555555', 'Resposta sem system prompt.')
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    'provider_exception',
+    [
+        AIProviderAuthenticationError('auth'),
+        AIProviderRateLimitError('rate-limit'),
+        AIProviderInvalidResponseError('empty'),
+    ],
+)
+def test_process_ai_response_provider_errors_do_not_create_or_send(provider_exception, caplog) -> None:
+    conversation = ConversationFactory()
+    WorkspaceAIProviderConfigFactory(
+        workspace=conversation.workspace,
+        api_key='sk-provider-error-key',
+    )
+    adapter = _adapter()
+    adapter.generate_response.side_effect = provider_exception
+
+    with (
+        caplog.at_level(logging.WARNING),
+        patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter),
+        patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+    ):
+        result = process_ai_response.run(str(conversation.id))
+
+    assert result is None
+    assert not Message.objects.filter(
+        conversation=conversation,
+        direction=Message.Direction.OUTBOUND,
+    ).exists()
+    mock_send_whatsapp.assert_not_called()
+    assert 'sk-provider-error-key' not in caplog.text

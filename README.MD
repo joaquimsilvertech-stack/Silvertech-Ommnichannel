@@ -201,6 +201,14 @@ Em producao, forneca secrets por variaveis de ambiente do provedor, gerenciador 
 
 Prompts podem variar por provider, e a edição futura deve acontecer pela API self-service de configuração de provedores. O Django Admin continua apenas para observabilidade e não expõe nem edita credenciais ou prompts.
 
+## Provider Adapters and Registry
+
+`WorkspaceAIProviderConfig` define o provider ativo por workspace. A task de IA resolve esse provider pelo registry interno e chama o adapter correspondente, sem importar SDKs diretamente.
+
+Atualmente, somente `OpenAIAdapter` é funcional. `Anthropic` e `Google` permanecem apenas modelados e retornam provider não suportado até seus adapters serem implementados.
+
+Para adicionar um novo provider, crie um adapter, registre no provider registry, adicione o SDK mínimo necessário e cubra o fluxo com testes unitários e de task. Não existe fallback automático entre providers, e cada adapter recebe exclusivamente a credencial criptografada do workspace da conversa.
+
 Antes de deploy:
 
 ```bash
