@@ -193,6 +193,14 @@ Nunca troque `FIELD_ENCRYPTION_KEY` sem um plano de rotacao. Essa chave descript
 
 Em producao, forneca secrets por variaveis de ambiente do provedor, gerenciador de secrets ou mecanismo equivalente. Como evolucao recomendada, use AWS Secrets Manager ou Parameter Store para injetar `SECRET_KEY`, `FIELD_ENCRYPTION_KEY`, credenciais PostgreSQL, Redis, Evolution API e Sentry sem gravar valores em arquivos versionados.
 
+## System Prompt Source of Truth
+
+`WorkspaceAIProviderConfig.system_prompt` é a fonte oficial do prompt de sistema usado pelo motor de IA.
+
+`Workspace.ai_system_prompt` e `WorkspaceAIConfig` estão deprecated e permanecem apenas para compatibilidade historica, migrations e rollback. O fluxo funcional não usa esses campos antigos.
+
+Prompts podem variar por provider, e a edição futura deve acontecer pela API self-service de configuração de provedores. O Django Admin continua apenas para observabilidade e não expõe nem edita credenciais ou prompts.
+
 Antes de deploy:
 
 ```bash

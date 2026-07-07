@@ -17,7 +17,7 @@ class WorkspaceSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
         )
-        read_only_fields = ('id', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'ai_system_prompt', 'created_at', 'updated_at')
 
 
 class _UserNestedSerializer(serializers.ModelSerializer):

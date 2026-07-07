@@ -41,7 +41,6 @@ class WorkspaceFactory(factory.django.DjangoModelFactory):
 
     name = factory.Sequence(lambda n: f'Workspace {n}')
     slug = factory.LazyAttribute(lambda obj: slugify(obj.name))
-    ai_system_prompt = 'Você é um assistente virtual prestativo da Silvertech.'
 
 
 class MemberFactory(factory.django.DjangoModelFactory):

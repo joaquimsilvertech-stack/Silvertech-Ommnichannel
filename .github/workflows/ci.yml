@@ -102,7 +102,9 @@ jobs:
 
       - name: Run migration regression tests
         # Usa migrations reais para validar rollback/upgrade do provedor de IA.
-        run: python -m pytest workspaces/tests/test_migrations_ai_provider.py --migrations --create-db -q
+        run: |
+          python -m pytest workspaces/tests/test_migrations_ai_provider.py --migrations --create-db -q
+          python -m pytest workspaces/tests/test_migrations_system_prompt.py --migrations --create-db -q
 
       - name: Run tests with coverage gate
         # Falha o pipeline se a cobertura total ficar abaixo de 60%.

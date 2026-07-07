@@ -17,7 +17,7 @@ from .models import Conversation, Message
 logger = logging.getLogger(__name__)
 
 WHATSAPP_CHANNEL = 'whatsapp'
-DEFAULT_AI_SYSTEM_PROMPT = 'Você é um assistente virtual prestativo da Silvertech.'
+RECENT_AI_MESSAGES_LIMIT = 15
 
 
 def _normalize_whatsapp_jid(remote_jid: str) -> str:
@@ -40,33 +40,27 @@ def _extract_evolution_text(message: dict[str, Any]) -> str | None:
     return None
 
 
-def build_conversation_context_for_ai(conversation_id) -> dict[str, Any] | None:
-    """Monta o contexto de conversa para processamento por IA."""
-    try:
-        conversation = Conversation.objects.select_related('workspace', 'contact').get(
-            id=conversation_id,
-        )
-    except Conversation.DoesNotExist:
-        logger.warning(
-            'Conversa nao encontrada para montar contexto de IA (conversation_id=%s)',
-            conversation_id,
-        )
-        return None
-
-    if conversation.is_human_handoff:
-        logger.info(
-            'Contexto de IA ignorado: conversa em handoff humano (conversation_id=%s)',
-            conversation_id,
-        )
-        return None
-
+def build_conversation_context_for_ai(
+    conversation: Conversation,
+    *,
+    system_prompt: str,
+) -> list[dict[str, str]]:
+    """Monta as mensagens para IA sem consultar configuracoes de prompt."""
     recent_messages = list(
         Message.objects.filter(conversation=conversation)
-        .order_by('-created_at')[:15],
+        .order_by('-created_at')[:RECENT_AI_MESSAGES_LIMIT],
     )
     recent_messages.reverse()
 
-    messages = []
+    messages: list[dict[str, str]] = []
+    if system_prompt:
+        messages.append(
+            {
+                'role': 'system',
+                'content': system_prompt,
+            },
+        )
+
     for message in recent_messages:
         role = 'user' if message.direction == Message.Direction.INBOUND else 'assistant'
         messages.append(
@@ -76,18 +70,7 @@ def build_conversation_context_for_ai(conversation_id) -> dict[str, Any] | None:
             },
         )
 
-    system_prompt = conversation.workspace.ai_system_prompt or DEFAULT_AI_SYSTEM_PROMPT
-
-    return {
-        'system_prompt': system_prompt,
-        'chat_info': {
-            'workspace_id': str(conversation.workspace.id),
-            'conversation_id': str(conversation.id),
-            'contact_name': conversation.contact.name,
-            'contact_phone': conversation.contact.phone,
-        },
-        'messages': messages,
-    }
+    return messages
 
 
 def _upsert_inbound_message(

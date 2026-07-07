@@ -8,6 +8,7 @@ class WorkspaceAdmin(admin.ModelAdmin):
     list_display = ('name', 'slug', 'created_at')
     search_fields = ('name', 'slug')
     prepopulated_fields = {'slug': ('name',)}
+    exclude = ('ai_system_prompt',)
 
 
 @admin.register(Member)

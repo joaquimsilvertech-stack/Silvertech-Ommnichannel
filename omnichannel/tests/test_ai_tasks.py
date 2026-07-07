@@ -181,6 +181,38 @@ def test_process_ai_response_uses_only_current_workspace_provider_config() -> No
 
 
 @pytest.mark.django_db
+def test_process_ai_response_ignores_workspace_ai_system_prompt() -> None:
+    conversation = ConversationFactory(contact__phone='5511666666666')
+    conversation.workspace.ai_system_prompt = 'PROMPT_LEGADO_WORKSPACE'
+    conversation.workspace.save(update_fields=['ai_system_prompt'])
+    WorkspaceAIProviderConfigFactory(
+        workspace=conversation.workspace,
+        api_key='sk-provider-official-key',
+        system_prompt='PROMPT_OFICIAL_PROVIDER',
+    )
+    MessageFactory(
+        conversation=conversation,
+        direction=Message.Direction.INBOUND,
+        body='Use o prompt oficial.',
+    )
+    client, mock_create = _openai_client('Resposta com prompt oficial.')
+
+    with (
+        patch('omnichannel.ai_service.openai.OpenAI', return_value=client),
+        patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+    ):
+        message_id = process_ai_response.run(str(conversation.id))
+
+    assert message_id is not None
+    assert mock_create.call_args.kwargs['messages'][0] == {
+        'role': 'system',
+        'content': 'PROMPT_OFICIAL_PROVIDER',
+    }
+    assert 'PROMPT_LEGADO_WORKSPACE' not in str(mock_create.call_args.kwargs['messages'])
+    mock_send_whatsapp.assert_called_once_with('5511666666666', 'Resposta com prompt oficial.')
+
+
+@pytest.mark.django_db
 def test_process_ai_response_ignores_non_openai_provider_for_now() -> None:
     conversation = ConversationFactory()
     WorkspaceAIProviderConfigFactory(
@@ -203,6 +235,8 @@ def test_process_ai_response_ignores_non_openai_provider_for_now() -> None:
 @pytest.mark.django_db
 def test_process_ai_response_ignores_divergent_legacy_provider_config() -> None:
     conversation = ConversationFactory(contact__phone='5511777777777')
+    conversation.workspace.ai_system_prompt = 'PROMPT_LEGADO_WORKSPACE'
+    conversation.workspace.save(update_fields=['ai_system_prompt'])
     LegacyWorkspaceAIConfig = apps.get_model('workspaces', 'WorkspaceAIConfig')
     LegacyWorkspaceAIConfig.objects.create(
         workspace=conversation.workspace,
@@ -237,4 +271,34 @@ def test_process_ai_response_ignores_divergent_legacy_provider_config() -> None:
         'role': 'system',
         'content': 'Prompt provider atual',
     }
+    assert 'Prompt legado que nao deve ser usado' not in str(mock_create.call_args.kwargs['messages'])
+    assert 'PROMPT_LEGADO_WORKSPACE' not in str(mock_create.call_args.kwargs['messages'])
     mock_send_whatsapp.assert_called_once_with('5511777777777', 'Resposta via provider config.')
+
+
+@pytest.mark.django_db
+def test_process_ai_response_with_empty_provider_prompt_does_not_send_empty_system_message() -> None:
+    conversation = ConversationFactory(contact__phone='5511555555555')
+    WorkspaceAIProviderConfigFactory(
+        workspace=conversation.workspace,
+        api_key='sk-empty-prompt-key',
+        system_prompt='',
+    )
+    MessageFactory(
+        conversation=conversation,
+        direction=Message.Direction.INBOUND,
+        body='Sem prompt de sistema.',
+    )
+    client, mock_create = _openai_client('Resposta sem system prompt.')
+
+    with (
+        patch('omnichannel.ai_service.openai.OpenAI', return_value=client),
+        patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+    ):
+        message_id = process_ai_response.run(str(conversation.id))
+
+    assert message_id is not None
+    assert mock_create.call_args.kwargs['messages'] == [
+        {'role': 'user', 'content': 'Sem prompt de sistema.'},
+    ]
+    mock_send_whatsapp.assert_called_once_with('5511555555555', 'Resposta sem system prompt.')
