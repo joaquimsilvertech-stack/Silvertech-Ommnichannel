@@ -10,6 +10,14 @@ from encrypted_model_fields.fields import EncryptedCharField
 from core.models import BaseModel
 
 
+class AIProvider(models.TextChoices):
+    """Provedores de IA suportados por configuracao de workspace."""
+
+    OPENAI = 'openai', 'OpenAI'
+    ANTHROPIC = 'anthropic', 'Anthropic Claude'
+    GOOGLE = 'google', 'Google Gemini'
+
+
 class Workspace(BaseModel):
     """Tenant lógico (organização / conta SaaS)."""
 
@@ -60,6 +68,46 @@ class WorkspaceAIConfig(BaseModel):
     def __str__(self) -> str:
         status = 'ativa' if self.is_active else 'inativa'
         return f'IA {status} @ {self.workspace_id}'
+
+
+class WorkspaceAIProviderConfig(BaseModel):
+    """Configuracao generica de provedor de IA isolada por workspace."""
+
+    workspace = models.ForeignKey(
+        Workspace,
+        on_delete=models.CASCADE,
+        related_name='ai_provider_configs',
+    )
+    provider = models.CharField(
+        max_length=32,
+        choices=AIProvider.choices,
+        db_index=True,
+    )
+    api_key = EncryptedCharField(max_length=512)
+    model_name = models.CharField(max_length=128)
+    system_prompt = models.TextField(blank=True, default='')
+    is_active = models.BooleanField(default=False, db_index=True)
+    settings = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ('workspace', 'provider')
+        constraints = [
+            models.UniqueConstraint(
+                fields=['workspace', 'provider'],
+                name='unique_ai_provider_per_workspace',
+            ),
+            models.UniqueConstraint(
+                fields=['workspace'],
+                condition=models.Q(is_active=True),
+                name='unique_active_ai_provider_per_workspace',
+            ),
+        ]
+        verbose_name = 'configuracao de provedor de IA do workspace'
+        verbose_name_plural = 'configuracoes de provedores de IA dos workspaces'
+
+    def __str__(self) -> str:
+        status = 'ativa' if self.is_active else 'inativa'
+        return f'{self.provider} {status} @ {self.workspace_id}'
 
 
 class Member(BaseModel):

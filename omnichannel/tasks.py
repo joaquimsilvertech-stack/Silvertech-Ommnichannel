@@ -19,12 +19,12 @@ def process_ai_response(conversation_id: str) -> str | None:
     from omnichannel.ai_service import generate_ai_reply
     from omnichannel.models import Conversation, Message
     from omnichannel.services import send_whatsapp_message
+    from workspaces.models import AIProvider, WorkspaceAIProviderConfig
 
     try:
         conversation = Conversation.objects.select_related(
             'contact',
             'workspace',
-            'workspace__ai_config',
         ).get(id=conversation_id)
     except Conversation.DoesNotExist:
         return None
@@ -32,14 +32,22 @@ def process_ai_response(conversation_id: str) -> str | None:
     if conversation.is_human_handoff:
         return None
 
-    ai_config = getattr(conversation.workspace, 'ai_config', None)
-    if not ai_config or not ai_config.is_active or not ai_config.openai_api_key:
+    ai_config = (
+        WorkspaceAIProviderConfig.objects.filter(
+            workspace=conversation.workspace,
+            provider=AIProvider.OPENAI,
+            is_active=True,
+        )
+        .only('api_key', 'system_prompt', 'model_name')
+        .first()
+    )
+    if not ai_config or not ai_config.api_key:
         return None
 
     reply_text = generate_ai_reply(
         conversation=conversation,
         system_prompt=ai_config.system_prompt,
-        api_key=ai_config.openai_api_key,
+        api_key=ai_config.api_key,
         model_name=ai_config.model_name,
     )
     if not reply_text:

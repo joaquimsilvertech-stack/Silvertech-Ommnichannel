@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Member, Workspace, WorkspaceInvite
+from .models import Member, Workspace, WorkspaceAIProviderConfig, WorkspaceInvite
 
 
 @admin.register(Workspace)
@@ -23,3 +23,12 @@ class WorkspaceInviteAdmin(admin.ModelAdmin):
     list_filter = ('accepted', 'role')
     search_fields = ('email', 'workspace__name', 'token')
     readonly_fields = ('token', 'invited_by', 'created_at', 'updated_at')
+
+
+@admin.register(WorkspaceAIProviderConfig)
+class WorkspaceAIProviderConfigAdmin(admin.ModelAdmin):
+    list_display = ('workspace', 'provider', 'model_name', 'is_active', 'created_at', 'updated_at')
+    list_filter = ('provider', 'is_active')
+    search_fields = ('workspace__name', 'model_name')
+    readonly_fields = ('created_at', 'updated_at')
+    exclude = ('api_key',)

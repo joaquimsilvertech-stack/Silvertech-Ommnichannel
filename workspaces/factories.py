@@ -4,7 +4,14 @@ import factory
 from django.contrib.auth import get_user_model
 from django.utils.text import slugify
 
-from .models import Member, Workspace, WorkspaceAIConfig, WorkspaceInvite
+from .models import (
+    AIProvider,
+    Member,
+    Workspace,
+    WorkspaceAIConfig,
+    WorkspaceAIProviderConfig,
+    WorkspaceInvite,
+)
 
 User = get_user_model()
 
@@ -60,6 +67,19 @@ class WorkspaceAIConfigFactory(factory.django.DjangoModelFactory):
     openai_api_key = 'sk-test-workspace-key'
     system_prompt = 'Você é um assistente virtual prestativo. Seja conciso.'
     model_name = 'gpt-4o-mini'
+
+
+class WorkspaceAIProviderConfigFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = WorkspaceAIProviderConfig
+
+    workspace = factory.SubFactory(WorkspaceFactory)
+    provider = AIProvider.OPENAI
+    api_key = 'sk-test-provider-key'
+    model_name = 'gpt-4o-mini'
+    system_prompt = 'Você é um assistente virtual prestativo. Seja conciso.'
+    is_active = True
+    settings = factory.Dict({})
 
 
 class WorkspaceInviteFactory(factory.django.DjangoModelFactory):
