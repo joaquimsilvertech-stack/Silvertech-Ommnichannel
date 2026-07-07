@@ -10,7 +10,7 @@ from django.db import connection
 
 from core.sanitization import sanitize_sensitive_data, sentry_before_send
 from workspaces.factories import WorkspaceFactory
-from workspaces.models import WorkspaceAIConfig
+from workspaces.models import AIProvider, WorkspaceAIProviderConfig
 
 TEST_FIELD_ENCRYPTION_KEY = '7EbNIqb9tM4Y-Q_XuIrkum0iErg9vNNtf5aeSZgAUPs='
 
@@ -183,20 +183,22 @@ def test_sentry_before_send_sanitizes_event() -> None:
 
 
 @pytest.mark.django_db
-def test_workspace_ai_config_keeps_api_key_encrypted_at_rest() -> None:
+def test_workspace_ai_provider_config_keeps_api_key_encrypted_at_rest() -> None:
     workspace = WorkspaceFactory()
-    config = WorkspaceAIConfig.objects.create(
+    config = WorkspaceAIProviderConfig.objects.create(
         workspace=workspace,
+        provider=AIProvider.OPENAI,
         is_active=True,
-        openai_api_key='sk-test-workspace-key',
+        api_key='sk-test-workspace-key',
+        model_name='gpt-4o-mini',
     )
 
     config.refresh_from_db()
-    assert config.openai_api_key == 'sk-test-workspace-key'
+    assert config.api_key == 'sk-test-workspace-key'
 
     with connection.cursor() as cursor:
         cursor.execute(
-            'SELECT openai_api_key FROM workspaces_workspaceaiconfig WHERE id = %s',
+            'SELECT api_key FROM workspaces_workspaceaiproviderconfig WHERE id = %s',
             [str(config.id)],
         )
         raw_value = cursor.fetchone()[0]

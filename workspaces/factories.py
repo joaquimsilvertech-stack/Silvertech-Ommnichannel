@@ -8,7 +8,6 @@ from .models import (
     AIProvider,
     Member,
     Workspace,
-    WorkspaceAIConfig,
     WorkspaceAIProviderConfig,
     WorkspaceInvite,
 )
@@ -56,17 +55,6 @@ class MemberFactory(factory.django.DjangoModelFactory):
 
 
 MembershipFactory = MemberFactory
-
-
-class WorkspaceAIConfigFactory(factory.django.DjangoModelFactory):
-    class Meta:
-        model = WorkspaceAIConfig
-
-    workspace = factory.SubFactory(WorkspaceFactory)
-    is_active = True
-    openai_api_key = 'sk-test-workspace-key'
-    system_prompt = 'Você é um assistente virtual prestativo. Seja conciso.'
-    model_name = 'gpt-4o-mini'
 
 
 class WorkspaceAIProviderConfigFactory(factory.django.DjangoModelFactory):

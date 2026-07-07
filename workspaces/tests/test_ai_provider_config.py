@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import importlib
-
 import pytest
-from django.apps import apps
 from django.db import IntegrityError, connection, transaction
 
 from workspaces.factories import (
-    WorkspaceAIConfigFactory,
     WorkspaceAIProviderConfigFactory,
     WorkspaceFactory,
 )
@@ -28,7 +24,7 @@ def test_workspace_can_have_openai_provider_config() -> None:
 @pytest.mark.django_db
 def test_workspace_can_have_openai_and_anthropic_when_only_one_is_active() -> None:
     workspace = WorkspaceFactory()
-    openai_config = WorkspaceAIProviderConfigFactory(
+    openai_provider_config = WorkspaceAIProviderConfigFactory(
         workspace=workspace,
         provider=AIProvider.OPENAI,
         is_active=True,
@@ -43,7 +39,7 @@ def test_workspace_can_have_openai_and_anthropic_when_only_one_is_active() -> No
     assert set(
         workspace.ai_provider_configs.values_list('provider', flat=True),
     ) == {AIProvider.OPENAI, AIProvider.ANTHROPIC}
-    assert openai_config.is_active is True
+    assert openai_provider_config.is_active is True
     assert anthropic_config.is_active is False
 
 
@@ -120,37 +116,3 @@ def test_workspace_provider_config_is_scoped_by_workspace() -> None:
 
     assert config is None
     assert other_config.workspace != current_workspace
-
-
-@pytest.mark.django_db
-def test_legacy_openai_config_migration_preserves_data() -> None:
-    legacy_config = WorkspaceAIConfigFactory(
-        openai_api_key='sk-legacy-openai-key',
-        model_name='gpt-4o-mini',
-        system_prompt='Prompt legado',
-        is_active=True,
-    )
-    WorkspaceAIProviderConfig.objects.all().delete()
-    migration = importlib.import_module('workspaces.migrations.0006_workspaceaiproviderconfig')
-
-    migration.copy_legacy_openai_configs(apps, None)
-
-    config = WorkspaceAIProviderConfig.objects.get(
-        workspace=legacy_config.workspace,
-        provider=AIProvider.OPENAI,
-    )
-    assert config.api_key == 'sk-legacy-openai-key'
-    assert config.model_name == 'gpt-4o-mini'
-    assert config.system_prompt == 'Prompt legado'
-    assert config.is_active is True
-    assert config.settings == {}
-
-
-@pytest.mark.django_db
-def test_legacy_openai_config_migration_tolerates_no_legacy_records() -> None:
-    WorkspaceAIProviderConfig.objects.all().delete()
-    migration = importlib.import_module('workspaces.migrations.0006_workspaceaiproviderconfig')
-
-    migration.copy_legacy_openai_configs(apps, None)
-
-    assert WorkspaceAIProviderConfig.objects.count() == 0

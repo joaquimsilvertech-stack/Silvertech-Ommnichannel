@@ -47,7 +47,12 @@ class Workspace(BaseModel):
 
 
 class WorkspaceAIConfig(BaseModel):
-    """Configuracao de IA isolada por workspace/tenant."""
+    """
+    DEPRECATED: modelo legado mantido temporariamente para rollback.
+
+    Nao utilizar em novos fluxos. Todo novo codigo deve usar
+    WorkspaceAIProviderConfig como fonte de verdade funcional.
+    """
 
     workspace = models.OneToOneField(
         Workspace,

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.apps import apps
 
 from omnichannel.ai_service import DEFAULT_OPENAI_MODEL, generate_ai_reply
 from omnichannel.factories import ConversationFactory, MessageFactory
@@ -124,7 +125,7 @@ def test_process_ai_response_skips_human_handoff() -> None:
 
 
 @pytest.mark.django_db
-def test_process_ai_response_skips_inactive_ai_config() -> None:
+def test_process_ai_response_skips_inactive_provider_config() -> None:
     conversation = ConversationFactory()
     WorkspaceAIProviderConfigFactory(
         workspace=conversation.workspace,
@@ -197,3 +198,43 @@ def test_process_ai_response_ignores_non_openai_provider_for_now() -> None:
     assert result is None
     mock_openai.assert_not_called()
     mock_send_whatsapp.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_process_ai_response_ignores_divergent_legacy_provider_config() -> None:
+    conversation = ConversationFactory(contact__phone='5511777777777')
+    LegacyWorkspaceAIConfig = apps.get_model('workspaces', 'WorkspaceAIConfig')
+    LegacyWorkspaceAIConfig.objects.create(
+        workspace=conversation.workspace,
+        is_active=True,
+        openai_api_key='sk-legacy-key',
+        system_prompt='Prompt legado que nao deve ser usado',
+        model_name='legacy-model',
+    )
+    WorkspaceAIProviderConfigFactory(
+        workspace=conversation.workspace,
+        api_key='sk-provider-key',
+        system_prompt='Prompt provider atual',
+        model_name='gpt-4o-mini',
+    )
+    MessageFactory(
+        conversation=conversation,
+        direction=Message.Direction.INBOUND,
+        body='Use somente provider config.',
+    )
+    client, mock_create = _openai_client('Resposta via provider config.')
+
+    with (
+        patch('omnichannel.ai_service.openai.OpenAI', return_value=client) as mock_openai,
+        patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+    ):
+        message_id = process_ai_response.run(str(conversation.id))
+
+    assert message_id is not None
+    mock_openai.assert_called_once_with(api_key='sk-provider-key')
+    assert mock_create.call_args.kwargs['model'] == 'gpt-4o-mini'
+    assert mock_create.call_args.kwargs['messages'][0] == {
+        'role': 'system',
+        'content': 'Prompt provider atual',
+    }
+    mock_send_whatsapp.assert_called_once_with('5511777777777', 'Resposta via provider config.')

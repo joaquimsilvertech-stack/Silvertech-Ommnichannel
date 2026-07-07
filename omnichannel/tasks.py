@@ -32,7 +32,7 @@ def process_ai_response(conversation_id: str) -> str | None:
     if conversation.is_human_handoff:
         return None
 
-    ai_config = (
+    provider_config = (
         WorkspaceAIProviderConfig.objects.filter(
             workspace=conversation.workspace,
             provider=AIProvider.OPENAI,
@@ -41,14 +41,14 @@ def process_ai_response(conversation_id: str) -> str | None:
         .only('api_key', 'system_prompt', 'model_name')
         .first()
     )
-    if not ai_config or not ai_config.api_key:
+    if not provider_config or not provider_config.api_key:
         return None
 
     reply_text = generate_ai_reply(
         conversation=conversation,
-        system_prompt=ai_config.system_prompt,
-        api_key=ai_config.api_key,
-        model_name=ai_config.model_name,
+        system_prompt=provider_config.system_prompt,
+        api_key=provider_config.api_key,
+        model_name=provider_config.model_name,
     )
     if not reply_text:
         return None

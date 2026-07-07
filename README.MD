@@ -189,7 +189,7 @@ Para gerar uma `SECRET_KEY` local segura:
 python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
 ```
 
-Nunca troque `FIELD_ENCRYPTION_KEY` sem um plano de rotacao. Essa chave descriptografa campos sensiveis ja gravados no banco, incluindo `WorkspaceAIConfig.openai_api_key`; alterar o valor sem migracao controlada torna esses dados ilegíveis.
+Nunca troque `FIELD_ENCRYPTION_KEY` sem um plano de rotacao. Essa chave descriptografa campos sensiveis ja gravados no banco, incluindo `WorkspaceAIProviderConfig.api_key`; alterar o valor sem migracao controlada torna esses dados ilegíveis.
 
 Em producao, forneca secrets por variaveis de ambiente do provedor, gerenciador de secrets ou mecanismo equivalente. Como evolucao recomendada, use AWS Secrets Manager ou Parameter Store para injetar `SECRET_KEY`, `FIELD_ENCRYPTION_KEY`, credenciais PostgreSQL, Redis, Evolution API e Sentry sem gravar valores em arquivos versionados.
 
