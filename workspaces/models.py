@@ -23,8 +23,8 @@ class Workspace(BaseModel):
 
     name = models.CharField(max_length=255, db_index=True)
     slug = models.SlugField(max_length=128, unique=True, db_index=True)
-    # DEPRECATED: fonte antiga do prompt de IA.
-    # Todo novo fluxo deve utilizar WorkspaceAIProviderConfig.system_prompt.
+    # DEPRECATED: campo legado mantido apenas para migrations historicas e rollback.
+    # Todo fluxo funcional deve utilizar WorkspaceAIProviderConfig.system_prompt.
     ai_system_prompt = models.TextField(
         blank=True,
         null=True,
