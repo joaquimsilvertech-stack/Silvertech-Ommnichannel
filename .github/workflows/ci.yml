@@ -100,6 +100,10 @@ jobs:
         # Garante que o schema aplica limpo no PostgreSQL do CI.
         run: python manage.py migrate --noinput
 
+      - name: Run migration regression tests
+        # Usa migrations reais para validar rollback/upgrade do provedor de IA.
+        run: python -m pytest workspaces/tests/test_migrations_ai_provider.py --migrations --create-db -q
+
       - name: Run tests with coverage gate
         # Falha o pipeline se a cobertura total ficar abaixo de 60%.
         run: pytest --cov=. --cov-report=term-missing --cov-fail-under=60

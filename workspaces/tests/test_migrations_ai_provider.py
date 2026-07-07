@@ -102,7 +102,7 @@ def test_migration_0005_to_0006_copies_legacy_openai_config(migrate_to) -> None:
     new_apps = migrate_to(MIGRATION_AFTER)
     WorkspaceAIProviderConfig = new_apps.get_model('workspaces', 'WorkspaceAIProviderConfig')
 
-    configs = list(WorkspaceAIProviderConfig.objects.all())
+    configs = list(WorkspaceAIProviderConfig.objects.filter(workspace_id=workspace.id))
 
     assert len(configs) == 1
     config = configs[0]
@@ -119,15 +119,13 @@ def test_migration_0005_to_0006_copies_legacy_openai_config(migrate_to) -> None:
 def test_migration_0005_to_0006_tolerates_no_legacy_configs(migrate_to) -> None:
     old_apps = migrate_to(MIGRATION_BEFORE)
     Workspace = old_apps.get_model('workspaces', 'Workspace')
-    WorkspaceAIConfig = old_apps.get_model('workspaces', 'WorkspaceAIConfig')
 
-    WorkspaceAIConfig.objects.all().delete()
-    Workspace.objects.all().delete()
+    workspace = _create_workspace(Workspace, slug='migration-test-no-legacy')
 
     new_apps = migrate_to(MIGRATION_AFTER)
     WorkspaceAIProviderConfig = new_apps.get_model('workspaces', 'WorkspaceAIProviderConfig')
 
-    assert WorkspaceAIProviderConfig.objects.count() == 0
+    assert not WorkspaceAIProviderConfig.objects.filter(workspace_id=workspace.id).exists()
 
 
 @pytest.mark.django_db(transaction=True)

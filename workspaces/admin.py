@@ -29,6 +29,18 @@ class WorkspaceInviteAdmin(admin.ModelAdmin):
 class WorkspaceAIProviderConfigAdmin(admin.ModelAdmin):
     list_display = ('workspace', 'provider', 'model_name', 'is_active', 'created_at', 'updated_at')
     list_filter = ('provider', 'is_active')
-    search_fields = ('workspace__name', 'model_name')
+    search_fields = ('workspace__name', 'workspace__slug', 'model_name')
     readonly_fields = ('created_at', 'updated_at')
     exclude = ('api_key',)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def has_view_permission(self, request, obj=None):
+        return request.user.is_staff
