@@ -43,4 +43,10 @@ class WorkspaceAIProviderConfigAdmin(admin.ModelAdmin):
         return False
 
     def has_view_permission(self, request, obj=None):
-        return request.user.is_staff
+        user = request.user
+        return (
+            user.is_authenticated
+            and user.is_active
+            and user.is_staff
+            and user.is_superuser
+        )

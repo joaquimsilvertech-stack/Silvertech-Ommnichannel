@@ -34,6 +34,16 @@ def non_staff_user(db):
 
 
 @pytest.fixture
+def staff_user(db):
+    return UserFactory(
+        email='staff-ai-provider@example.com',
+        is_active=True,
+        is_staff=True,
+        is_superuser=False,
+    )
+
+
+@pytest.fixture
 def provider_config(db):
     return WorkspaceAIProviderConfigFactory(
         workspace__name='Admin Observability Workspace',
@@ -105,6 +115,44 @@ def test_workspace_ai_provider_admin_blocks_add_change_and_delete_permissions(
     assert model_admin.has_add_permission(request) is False
     assert model_admin.has_change_permission(request, provider_config) is False
     assert model_admin.has_delete_permission(request, provider_config) is False
+
+
+@pytest.mark.django_db
+def test_staff_non_superuser_cannot_view_workspace_ai_provider_changelist(
+    client,
+    staff_user,
+    provider_config,
+) -> None:
+    client.force_login(staff_user)
+
+    response = client.get(reverse('admin:workspaces_workspaceaiproviderconfig_changelist'))
+
+    content = _decoded(response)
+    assert response.status_code in {302, 403}
+    assert response.status_code != 200
+    assert SENSITIVE_ADMIN_API_KEY not in content
+    assert 'Admin Observability Workspace' not in content
+    assert 'gpt-4o-mini-admin' not in content
+
+
+@pytest.mark.django_db
+def test_staff_non_superuser_cannot_view_workspace_ai_provider_detail(
+    client,
+    staff_user,
+    provider_config,
+) -> None:
+    client.force_login(staff_user)
+
+    response = client.get(
+        reverse('admin:workspaces_workspaceaiproviderconfig_change', args=[provider_config.pk]),
+    )
+
+    content = _decoded(response)
+    assert response.status_code in {302, 403, 404}
+    assert response.status_code != 200
+    assert SENSITIVE_ADMIN_API_KEY not in content
+    assert 'Admin Observability Workspace' not in content
+    assert 'gpt-4o-mini-admin' not in content
 
 
 @pytest.mark.django_db
