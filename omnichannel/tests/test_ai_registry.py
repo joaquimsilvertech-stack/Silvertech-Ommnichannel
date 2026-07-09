@@ -6,7 +6,7 @@ import pytest
 
 from omnichannel.ai.exceptions import UnsupportedAIProviderError
 from omnichannel.ai.providers.openai import OpenAIAdapter
-from omnichannel.ai.registry import get_provider_adapter
+from omnichannel.ai.registry import get_provider_adapter, is_provider_supported
 from workspaces.models import AIProvider
 
 
@@ -15,6 +15,21 @@ def test_registry_returns_openai_adapter() -> None:
         adapter = get_provider_adapter(provider=AIProvider.OPENAI, api_key='sk-registry-key')
 
     assert isinstance(adapter, OpenAIAdapter)
+
+
+@pytest.mark.parametrize(
+    ('provider', 'expected'),
+    [
+        (AIProvider.OPENAI, True),
+        (AIProvider.ANTHROPIC, False),
+        (AIProvider.GOOGLE, False),
+    ],
+)
+def test_is_provider_supported(provider: str, expected: bool) -> None:
+    with patch('omnichannel.ai.providers.openai.openai.OpenAI') as mock_openai:
+        assert is_provider_supported(provider) is expected
+
+    mock_openai.assert_not_called()
 
 
 @pytest.mark.parametrize('provider', [AIProvider.ANTHROPIC, AIProvider.GOOGLE, 'unknown'])

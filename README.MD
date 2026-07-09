@@ -213,6 +213,14 @@ Para adicionar um novo provider, crie um adapter, registre no provider registry,
 
 No `OpenAIAdapter`, `max_tokens` e `max_completion_tokens` sao mutuamente exclusivos para evitar configuracoes ambiguas enviadas ao SDK.
 
+## AI Provider Self-Service Serializer
+
+`WorkspaceAIProviderConfigSerializer` prepara a futura API self-service de configuracao de provedores de IA sem expor credenciais. O campo `api_key` e aceito apenas como `write_only`; respostas publicas usam somente `has_api_key` para indicar se existe credencial cadastrada.
+
+O workspace da configuracao vem exclusivamente do contexto do serializer, nunca do payload enviado pelo cliente. Somente providers com adapter registrado no registry podem ser criados ou ativados pelo self-service. Neste momento, apenas OpenAI possui adapter funcional; Anthropic e Google continuam modelados, mas nao suportados no runtime.
+
+As `settings` do provider sao validadas por allowlist e bloqueiam chaves sensiveis como credenciais, tokens, headers, proxies e parametros de cliente. Os endpoints de listagem, criacao e atualizacao serao implementados na proxima parte.
+
 Antes de deploy:
 
 ```bash

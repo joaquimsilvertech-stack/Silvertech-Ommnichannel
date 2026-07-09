@@ -17,17 +17,7 @@ from ..exceptions import (
     AIProviderUnavailableError,
 )
 from ..types import AIProviderResult
-
-MAX_TIMEOUT_SECONDS = 120
-_ALLOWED_SETTINGS = {
-    'temperature',
-    'top_p',
-    'max_tokens',
-    'max_completion_tokens',
-    'frequency_penalty',
-    'presence_penalty',
-    'timeout',
-}
+from .openai_settings import validate_openai_settings
 
 
 class OpenAIAdapter(BaseAIProviderAdapter):
@@ -48,7 +38,7 @@ class OpenAIAdapter(BaseAIProviderAdapter):
         messages: list[dict[str, str]],
         settings: dict[str, Any],
     ) -> AIProviderResult:
-        request_settings = _validate_openai_settings(settings)
+        request_settings = validate_openai_settings(settings)
 
         try:
             response = self._client.chat.completions.create(
@@ -78,66 +68,6 @@ class OpenAIAdapter(BaseAIProviderAdapter):
             raise AIProviderError('Erro operacional no provider OpenAI.') from exc
 
         return _normalize_openai_response(response, requested_model_name=model_name)
-
-
-def _validate_openai_settings(settings: dict[str, Any]) -> dict[str, Any]:
-    if not settings:
-        return {}
-
-    unknown_settings = set(settings) - _ALLOWED_SETTINGS
-    if unknown_settings:
-        raise AIProviderInvalidRequestError('Settings OpenAI contem chaves nao suportadas.')
-
-    if settings.get('max_tokens') is not None and settings.get('max_completion_tokens') is not None:
-        raise AIProviderInvalidRequestError('Use apenas max_tokens ou max_completion_tokens.')
-
-    validated: dict[str, Any] = {}
-    for key, value in settings.items():
-        if value is None:
-            continue
-
-        if key in {'max_tokens', 'max_completion_tokens'}:
-            validated[key] = _validate_positive_int(key, value)
-            continue
-
-        if key == 'timeout':
-            validated[key] = _validate_number_range(key, value, minimum=0, maximum=MAX_TIMEOUT_SECONDS)
-            continue
-
-        if key in {'temperature'}:
-            validated[key] = _validate_number_range(key, value, minimum=0, maximum=2)
-            continue
-
-        if key == 'top_p':
-            validated[key] = _validate_number_range(key, value, minimum=0, maximum=1)
-            continue
-
-        if key in {'frequency_penalty', 'presence_penalty'}:
-            validated[key] = _validate_number_range(key, value, minimum=-2, maximum=2)
-
-    return validated
-
-
-def _validate_positive_int(key: str, value: Any) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise AIProviderInvalidRequestError(f'Setting OpenAI invalido: {key}.')
-    return value
-
-
-def _validate_number_range(key: str, value: Any, *, minimum: float, maximum: float) -> float | int:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise AIProviderInvalidRequestError(f'Setting OpenAI invalido: {key}.')
-
-    if key == 'timeout' and value <= minimum:
-        raise AIProviderInvalidRequestError(f'Setting OpenAI invalido: {key}.')
-
-    if key != 'timeout' and value < minimum:
-        raise AIProviderInvalidRequestError(f'Setting OpenAI invalido: {key}.')
-
-    if value > maximum:
-        raise AIProviderInvalidRequestError(f'Setting OpenAI invalido: {key}.')
-
-    return value
 
 
 def _normalize_openai_response(response: Any, *, requested_model_name: str) -> AIProviderResult:

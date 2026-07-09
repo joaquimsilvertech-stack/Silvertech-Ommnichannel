@@ -11,6 +11,10 @@ PROVIDER_ADAPTERS: dict[str, type[BaseAIProviderAdapter]] = {
 }
 
 
+def is_provider_supported(provider: str) -> bool:
+    return provider in PROVIDER_ADAPTERS
+
+
 def get_provider_adapter(*, provider: str, api_key: str) -> BaseAIProviderAdapter:
     adapter_class = PROVIDER_ADAPTERS.get(provider)
     if adapter_class is None:

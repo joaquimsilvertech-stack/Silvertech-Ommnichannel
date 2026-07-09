@@ -1,9 +1,14 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
-from .models import Member, Workspace, WorkspaceInvite
+from omnichannel.ai.exceptions import AIProviderInvalidRequestError
+from omnichannel.ai.providers.openai_settings import validate_no_sensitive_settings, validate_openai_settings
+from omnichannel.ai.registry import is_provider_supported
+
+from .models import AIProvider, Member, Workspace, WorkspaceAIProviderConfig, WorkspaceInvite
 
 User = get_user_model()
+MAX_SYSTEM_PROMPT_LENGTH = 12000
 
 
 class WorkspaceSerializer(serializers.ModelSerializer):
@@ -131,3 +136,185 @@ class WorkspaceInviteSerializer(serializers.ModelSerializer):
                     {'email': 'Este e-mail já é membro ativo deste workspace.'},
                 )
         return attrs
+
+
+class WorkspaceAIProviderConfigSerializer(serializers.ModelSerializer):
+    api_key = serializers.CharField(
+        write_only=True,
+        required=False,
+        allow_blank=True,
+        trim_whitespace=False,
+        style={'input_type': 'password'},
+    )
+    model_name = serializers.CharField(max_length=128, trim_whitespace=False)
+    system_prompt = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        trim_whitespace=False,
+    )
+    settings = serializers.JSONField(required=False, allow_null=True)
+    has_api_key = serializers.SerializerMethodField()
+    is_supported = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WorkspaceAIProviderConfig
+        fields = (
+            'id',
+            'provider',
+            'model_name',
+            'system_prompt',
+            'settings',
+            'is_active',
+            'has_api_key',
+            'is_supported',
+            'created_at',
+            'updated_at',
+            'api_key',
+        )
+        read_only_fields = (
+            'id',
+            'has_api_key',
+            'is_supported',
+            'created_at',
+            'updated_at',
+        )
+
+    def get_has_api_key(self, obj: WorkspaceAIProviderConfig) -> bool:
+        return bool(obj.api_key)
+
+    def get_is_supported(self, obj: WorkspaceAIProviderConfig) -> bool:
+        return is_provider_supported(obj.provider)
+
+    def validate_model_name(self, value: str) -> str:
+        if not value or not value.strip():
+            raise serializers.ValidationError('Modelo obrigatorio.')
+        if value != value.strip() or '\n' in value or '\r' in value:
+            raise serializers.ValidationError('Modelo invalido.')
+        return value
+
+    def validate_system_prompt(self, value: str) -> str:
+        if len(value) > MAX_SYSTEM_PROMPT_LENGTH:
+            raise serializers.ValidationError('Prompt excede o tamanho maximo permitido.')
+        return value
+
+    def validate_settings(self, value):
+        return {} if value is None else value
+
+    def validate(self, attrs):
+        self._reject_payload_workspace()
+        workspace = self._get_workspace()
+
+        provider = attrs.get('provider', self.instance.provider if self.instance else None)
+        if self.instance is None:
+            self._validate_supported_provider(provider)
+            self._validate_unique_provider(workspace, provider)
+        else:
+            self._validate_instance_workspace(workspace)
+            self._validate_immutable_provider(provider)
+
+        if 'api_key' in attrs:
+            attrs['api_key'] = self._validate_api_key_value(attrs['api_key'])
+
+        if attrs.get('is_active') is True:
+            self._validate_supported_provider(provider)
+            self._validate_single_active_provider(workspace)
+
+        if self.instance is None and not attrs.get('api_key'):
+            raise serializers.ValidationError('Credencial obrigatoria para criar provider.')
+
+        if 'settings' not in attrs and self.instance is None:
+            attrs['settings'] = {}
+        elif attrs.get('settings') is None:
+            attrs['settings'] = {}
+
+        if 'settings' in attrs:
+            attrs['settings'] = self._validate_provider_settings(provider, attrs['settings'])
+
+        return attrs
+
+    def create(self, validated_data):
+        workspace = self._get_workspace()
+        api_key = validated_data.pop('api_key', None)
+        if not api_key:
+            raise serializers.ValidationError('Credencial obrigatoria para criar provider.')
+
+        return WorkspaceAIProviderConfig.objects.create(
+            workspace=workspace,
+            api_key=api_key,
+            **validated_data,
+        )
+
+    def update(self, instance, validated_data):
+        workspace = self._get_workspace()
+        if instance.workspace_id != workspace.id:
+            raise serializers.ValidationError('Workspace invalido para esta configuracao.')
+
+        api_key = validated_data.pop('api_key', serializers.empty)
+        if api_key is not serializers.empty:
+            instance.api_key = api_key
+
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+
+        instance.save()
+        return instance
+
+    def _get_workspace(self) -> Workspace:
+        workspace = self.context.get('workspace')
+        if workspace is None:
+            raise serializers.ValidationError('Workspace context is required.')
+        return workspace
+
+    def _reject_payload_workspace(self) -> None:
+        initial_data = getattr(self, 'initial_data', {}) or {}
+        if 'workspace' in initial_data or 'workspace_id' in initial_data:
+            raise serializers.ValidationError('Workspace deve ser definido pelo contexto.')
+
+    def _validate_instance_workspace(self, workspace: Workspace) -> None:
+        if self.instance.workspace_id != workspace.id:
+            raise serializers.ValidationError('Workspace invalido para esta configuracao.')
+
+    def _validate_immutable_provider(self, provider: str) -> None:
+        if provider != self.instance.provider:
+            raise serializers.ValidationError('Provider nao pode ser alterado.')
+
+    def _validate_supported_provider(self, provider: str) -> None:
+        if not is_provider_supported(provider):
+            raise serializers.ValidationError('Provider nao suportado para self-service.')
+
+    def _validate_api_key_value(self, value: str) -> str:
+        if (
+            not isinstance(value, str)
+            or not value
+            or not value.strip()
+            or value != value.strip()
+            or '\n' in value
+            or '\r' in value
+            or len(value) < 8
+        ):
+            raise serializers.ValidationError('Credencial invalida.')
+        return value
+
+    def _validate_single_active_provider(self, workspace: Workspace) -> None:
+        queryset = WorkspaceAIProviderConfig.objects.filter(
+            workspace=workspace,
+            is_active=True,
+        )
+        if self.instance is not None:
+            queryset = queryset.exclude(id=self.instance.id)
+        if queryset.exists():
+            raise serializers.ValidationError('Ja existe um provider ativo para este workspace.')
+
+    def _validate_unique_provider(self, workspace: Workspace, provider: str) -> None:
+        if WorkspaceAIProviderConfig.objects.filter(workspace=workspace, provider=provider).exists():
+            raise serializers.ValidationError('Provider ja configurado para este workspace.')
+
+    def _validate_provider_settings(self, provider: str, settings: dict) -> dict:
+        try:
+            validate_no_sensitive_settings(settings)
+            if provider == AIProvider.OPENAI:
+                return validate_openai_settings(settings)
+        except AIProviderInvalidRequestError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+
+        return settings
