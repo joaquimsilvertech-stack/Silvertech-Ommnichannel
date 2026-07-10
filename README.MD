@@ -219,7 +219,21 @@ No `OpenAIAdapter`, `max_tokens` e `max_completion_tokens` sao mutuamente exclus
 
 O workspace da configuracao vem exclusivamente do contexto do serializer, nunca do payload enviado pelo cliente. Somente providers com adapter registrado no registry podem ser criados ou ativados pelo self-service. Neste momento, apenas OpenAI possui adapter funcional; Anthropic e Google continuam modelados, mas nao suportados no runtime.
 
-As `settings` do provider sao validadas por allowlist e bloqueiam chaves sensiveis como credenciais, tokens, headers, proxies e parametros de cliente. Os endpoints de listagem, criacao e atualizacao serao implementados na proxima parte.
+As `settings` do provider sao validadas por allowlist e bloqueiam chaves sensiveis como credenciais, tokens, headers, proxies e parametros de cliente.
+
+## AI Provider Self-Service API
+
+Administradores do workspace podem gerenciar configuracoes de providers de IA pelos endpoints:
+
+- `GET /api/workspaces/workspaces/{workspace_id}/ai-providers/`
+- `POST /api/workspaces/workspaces/{workspace_id}/ai-providers/`
+- `GET /api/workspaces/workspaces/{workspace_id}/ai-providers/{id}/`
+- `PUT /api/workspaces/workspaces/{workspace_id}/ai-providers/{id}/`
+- `PATCH /api/workspaces/workspaces/{workspace_id}/ai-providers/{id}/`
+
+O `workspace_id` vem da URL e e repassado ao serializer pelo contexto; payloads com workspace sao rejeitados. `api_key` permanece apenas `write_only`, e respostas usam `has_api_key` para indicar credencial cadastrada. Apenas OpenAI esta funcional no runtime atual; Anthropic e Google continuam sem adapter e nao podem ser criados ou ativados pelo self-service.
+
+Nao existe endpoint de teste de credencial nesta parte, e salvar configuracoes nao faz chamada externa a providers.
 
 Antes de deploy:
 

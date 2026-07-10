@@ -2,8 +2,10 @@ import logging
 import uuid
 from datetime import timedelta
 
+from django.db import IntegrityError
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from rest_framework import viewsets
+from rest_framework import mixins, serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -11,9 +13,11 @@ from rest_framework.response import Response
 from crm.mixins import WorkspaceScopedQuerysetMixin
 from core.sanitization import mask_email
 
-from .models import Member, Workspace, WorkspaceInvite
+from .models import Member, Workspace, WorkspaceAIProviderConfig, WorkspaceInvite
+from .permissions import IsWorkspaceAdminMember
 from .serializers import (
     MemberSerializer,
+    WorkspaceAIProviderConfigSerializer,
     WorkspaceInviteSerializer,
     WorkspaceSerializer,
 )
@@ -75,3 +79,56 @@ class WorkspaceInviteViewSet(viewsets.ModelViewSet):
             expires_at=timezone.now() + timedelta(days=7),
         )
         send_invite_email(invite)
+
+
+class WorkspaceAIProviderConfigViewSet(
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.CreateModelMixin,
+    mixins.UpdateModelMixin,
+    viewsets.GenericViewSet,
+):
+    serializer_class = WorkspaceAIProviderConfigSerializer
+    permission_classes = [IsAuthenticated, IsWorkspaceAdminMember]
+    http_method_names = ['get', 'post', 'put', 'patch', 'head', 'options']
+
+    def get_workspace(self) -> Workspace:
+        if not hasattr(self, '_workspace'):
+            workspace_id = self.kwargs.get('workspace_id')
+            if self.request.user.is_superuser:
+                self._workspace = get_object_or_404(Workspace, id=workspace_id)
+            else:
+                self._workspace = get_object_or_404(
+                    Workspace,
+                    id=workspace_id,
+                    memberships__user=self.request.user,
+                    memberships__role__in={Member.Role.OWNER, Member.Role.ADMIN},
+                )
+        return self._workspace
+
+    def get_queryset(self):
+        workspace = self.get_workspace()
+        return WorkspaceAIProviderConfig.objects.select_related('workspace').filter(
+            workspace=workspace,
+        )
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['workspace'] = self.get_workspace()
+        return context
+
+    def perform_create(self, serializer):
+        try:
+            serializer.save()
+        except IntegrityError as exc:
+            raise serializers.ValidationError(
+                'Configuracao de provider invalida para este workspace.',
+            ) from exc
+
+    def perform_update(self, serializer):
+        try:
+            serializer.save()
+        except IntegrityError as exc:
+            raise serializers.ValidationError(
+                'Configuracao de provider invalida para este workspace.',
+            ) from exc
