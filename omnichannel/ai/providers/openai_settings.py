@@ -38,10 +38,13 @@ SENSITIVE_SETTING_KEYS = {
 
 
 def validate_openai_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
-    if not settings:
+    if settings is None:
         return {}
 
     _validate_settings_mapping(settings)
+
+    if not settings:
+        return {}
 
     unknown_settings = set(settings) - ALLOWED_OPENAI_SETTINGS
     if unknown_settings:

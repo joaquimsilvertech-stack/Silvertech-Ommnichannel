@@ -6,6 +6,20 @@ from omnichannel.ai.exceptions import AIProviderInvalidRequestError
 from omnichannel.ai.providers.openai_settings import validate_openai_settings
 
 
+def test_validate_openai_settings_accepts_none_as_empty_settings() -> None:
+    assert validate_openai_settings(None) == {}
+
+
+def test_validate_openai_settings_accepts_empty_dict() -> None:
+    assert validate_openai_settings({}) == {}
+
+
+@pytest.mark.parametrize('setting_payload', [[], '', 0, False])
+def test_validate_openai_settings_rejects_falsy_non_dict_values(setting_payload) -> None:
+    with pytest.raises(AIProviderInvalidRequestError):
+        validate_openai_settings(setting_payload)
+
+
 def test_validate_openai_settings_accepts_valid_temperature() -> None:
     assert validate_openai_settings({'temperature': 0.7}) == {'temperature': 0.7}
 
