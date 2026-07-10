@@ -42,7 +42,6 @@ def _payload(**overrides):
         'model_name': 'gpt-4o-mini',
         'system_prompt': 'Seja conciso.',
         'settings': {},
-        'is_active': False,
         'api_key': 'sk-valid-api-key',
     }
     data.update(overrides)
@@ -186,6 +185,7 @@ def test_create_valid_openai_config() -> None:
     config = WorkspaceAIProviderConfig.objects.get(workspace=workspace, provider=AIProvider.OPENAI)
     assert config.model_name == 'gpt-4o-mini'
     assert config.api_key == 'sk-valid-api-key'
+    assert config.is_active is False
 
 
 @pytest.mark.django_db
@@ -346,9 +346,8 @@ def test_patch_trying_to_change_provider_fails() -> None:
 
 
 @pytest.mark.django_db
-def test_patch_activating_second_active_provider_fails() -> None:
+def test_patch_trying_to_change_is_active_fails() -> None:
     client, _, workspace = _admin_client()
-    WorkspaceAIProviderConfigFactory(workspace=workspace, provider=AIProvider.ANTHROPIC, is_active=True)
     config = WorkspaceAIProviderConfigFactory(workspace=workspace, provider=AIProvider.OPENAI, is_active=False)
 
     response = client.patch(
@@ -361,7 +360,7 @@ def test_patch_activating_second_active_provider_fails() -> None:
 
 
 @pytest.mark.django_db
-def test_patch_deactivating_active_provider_works() -> None:
+def test_patch_deactivating_active_provider_fails() -> None:
     client, _, workspace = _admin_client()
     config = WorkspaceAIProviderConfigFactory(workspace=workspace, is_active=True)
 
@@ -371,9 +370,9 @@ def test_patch_deactivating_active_provider_works() -> None:
         format='json',
     )
 
-    assert response.status_code == status.HTTP_200_OK
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
     config.refresh_from_db()
-    assert config.is_active is False
+    assert config.is_active is True
 
 
 @pytest.mark.django_db
@@ -503,7 +502,7 @@ def test_same_user_member_of_two_workspaces_only_sees_url_workspace_configs() ->
 
 
 @pytest.mark.django_db
-def test_active_provider_in_other_workspace_does_not_block_activation() -> None:
+def test_generic_patch_is_active_is_rejected_even_when_other_workspace_has_active_provider() -> None:
     WorkspaceAIProviderConfigFactory(is_active=True)
     client, _, workspace = _admin_client()
     config = WorkspaceAIProviderConfigFactory(workspace=workspace, is_active=False)
@@ -514,7 +513,7 @@ def test_active_provider_in_other_workspace_does_not_block_activation() -> None:
         format='json',
     )
 
-    assert response.status_code == status.HTTP_200_OK
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
 
 
 @pytest.mark.django_db

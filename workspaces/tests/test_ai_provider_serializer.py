@@ -16,7 +16,6 @@ def _payload(**overrides):
         'model_name': 'gpt-4o-mini',
         'system_prompt': 'Seja conciso.',
         'settings': {},
-        'is_active': False,
         'api_key': 'sk-valid-test-key',
     }
     data.update(overrides)
@@ -217,7 +216,7 @@ def test_provider_is_immutable_on_update() -> None:
 @pytest.mark.parametrize('provider', [AIProvider.ANTHROPIC, AIProvider.GOOGLE])
 def test_unsupported_provider_cannot_be_created(provider: str) -> None:
     serializer = WorkspaceAIProviderConfigSerializer(
-        data=_payload(provider=provider, is_active=False),
+        data=_payload(provider=provider),
         context={'workspace': WorkspaceFactory()},
     )
 
@@ -225,7 +224,7 @@ def test_unsupported_provider_cannot_be_created(provider: str) -> None:
 
 
 @pytest.mark.django_db
-def test_unsupported_provider_cannot_be_activated() -> None:
+def test_is_active_cannot_be_changed_by_serializer_update() -> None:
     config = WorkspaceAIProviderConfigFactory(provider=AIProvider.ANTHROPIC, is_active=False)
     serializer = WorkspaceAIProviderConfigSerializer(
         config,
@@ -235,12 +234,12 @@ def test_unsupported_provider_cannot_be_activated() -> None:
     )
 
     assert not serializer.is_valid()
+    assert 'ativacao/desativacao' in str(serializer.errors)
 
 
 @pytest.mark.django_db
-def test_second_active_provider_in_same_workspace_is_rejected() -> None:
+def test_is_active_cannot_be_set_by_serializer_create() -> None:
     workspace = WorkspaceFactory()
-    WorkspaceAIProviderConfigFactory(workspace=workspace, provider=AIProvider.OPENAI, is_active=True)
     serializer = WorkspaceAIProviderConfigSerializer(
         data=_payload(provider=AIProvider.ANTHROPIC, is_active=True),
         context={'workspace': workspace},
@@ -249,14 +248,14 @@ def test_second_active_provider_in_same_workspace_is_rejected() -> None:
     with patch('workspaces.serializers.is_provider_supported', return_value=True):
         assert not serializer.is_valid()
 
-    assert 'Ja existe um provider ativo para este workspace.' in str(serializer.errors)
+    assert 'ativacao/desativacao' in str(serializer.errors)
 
 
 @pytest.mark.django_db
 def test_active_provider_in_other_workspace_does_not_block_create() -> None:
     WorkspaceAIProviderConfigFactory(is_active=True)
     serializer = WorkspaceAIProviderConfigSerializer(
-        data=_payload(is_active=True),
+        data=_payload(),
         context={'workspace': WorkspaceFactory()},
     )
 
@@ -268,7 +267,7 @@ def test_duplicate_provider_in_same_workspace_is_rejected() -> None:
     workspace = WorkspaceFactory()
     WorkspaceAIProviderConfigFactory(workspace=workspace, provider=AIProvider.OPENAI, is_active=False)
     serializer = WorkspaceAIProviderConfigSerializer(
-        data=_payload(provider=AIProvider.OPENAI, is_active=False),
+        data=_payload(provider=AIProvider.OPENAI),
         context={'workspace': workspace},
     )
 
@@ -279,7 +278,7 @@ def test_duplicate_provider_in_same_workspace_is_rejected() -> None:
 def test_same_provider_in_different_workspace_is_allowed() -> None:
     WorkspaceAIProviderConfigFactory(provider=AIProvider.OPENAI, is_active=False)
     serializer = WorkspaceAIProviderConfigSerializer(
-        data=_payload(provider=AIProvider.OPENAI, is_active=False),
+        data=_payload(provider=AIProvider.OPENAI),
         context={'workspace': WorkspaceFactory()},
     )
 

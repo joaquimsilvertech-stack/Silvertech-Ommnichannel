@@ -16,6 +16,7 @@ from omnichannel.ai.connection_test import (
     get_connection_test_http_status,
     test_ai_provider_connection,
 )
+from omnichannel.ai.registry import is_provider_supported
 
 from .models import Member, Workspace, WorkspaceAIProviderConfig, WorkspaceInvite
 from .permissions import IsWorkspaceAdminMember
@@ -25,6 +26,11 @@ from .serializers import (
     WorkspaceAIProviderConfigSerializer,
     WorkspaceInviteSerializer,
     WorkspaceSerializer,
+)
+from .services import (
+    AIProviderActivationError,
+    activate_ai_provider_config,
+    deactivate_ai_provider_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,10 +103,13 @@ class WorkspaceAIProviderConfigViewSet(
     permission_classes = [IsAuthenticated, IsWorkspaceAdminMember]
     http_method_names = ['get', 'post', 'put', 'patch', 'head', 'options']
     test_connection_throttle_scope = 'ai_provider_test_connection'
+    activation_throttle_scope = 'ai_provider_activation'
 
     def get_throttles(self):
         if getattr(self, 'action', None) == 'test_connection':
             self.throttle_scope = self.test_connection_throttle_scope
+        elif getattr(self, 'action', None) == 'activate_provider':
+            self.throttle_scope = self.activation_throttle_scope
         return super().get_throttles()
 
     def get_workspace(self) -> Workspace:
@@ -166,3 +175,101 @@ class WorkspaceAIProviderConfigViewSet(
             payload,
             status=get_connection_test_http_status(result),
         )
+
+    def activate_provider(self, request, *args, **kwargs):
+        provider_config = self.get_object()
+        workspace = self.get_workspace()
+
+        if 'api_key' in request.data:
+            return Response(
+                {
+                    'success': False,
+                    'provider': provider_config.provider,
+                    'model_name': provider_config.model_name,
+                    'message': 'Use a credencial salva para ativar o provider.',
+                    'error_code': 'TEMPORARY_API_KEY_NOT_ALLOWED',
+                },
+                status=400,
+            )
+
+        if provider_config.is_active:
+            return Response(self._activation_payload(provider_config, is_active=True))
+
+        if not is_provider_supported(provider_config.provider):
+            return Response(
+                {
+                    'success': False,
+                    'provider': provider_config.provider,
+                    'model_name': provider_config.model_name,
+                    'message': 'Este provedor ainda nao possui adapter ativo.',
+                    'error_code': 'UNSUPPORTED_PROVIDER',
+                },
+                status=400,
+            )
+
+        if not provider_config.api_key:
+            return Response(
+                {
+                    'success': False,
+                    'provider': provider_config.provider,
+                    'model_name': provider_config.model_name,
+                    'message': 'Credencial salva obrigatoria para ativar provider.',
+                    'error_code': 'MISSING_API_KEY',
+                },
+                status=400,
+            )
+
+        result = test_ai_provider_connection(provider_config=provider_config)
+        if not result.success:
+            payload = {
+                'success': False,
+                'provider': result.provider,
+                'model_name': result.model_name,
+                'message': result.message,
+            }
+            if result.error_code:
+                payload['error_code'] = result.error_code
+            return Response(payload, status=get_connection_test_http_status(result))
+
+        try:
+            provider_config = activate_ai_provider_config(
+                workspace=workspace,
+                provider_config=provider_config,
+            )
+        except AIProviderActivationError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+
+        return Response(self._activation_payload(provider_config, is_active=True))
+
+    def deactivate_provider(self, request, *args, **kwargs):
+        provider_config = self.get_object()
+        workspace = self.get_workspace()
+
+        try:
+            provider_config = deactivate_ai_provider_config(
+                workspace=workspace,
+                provider_config=provider_config,
+            )
+        except AIProviderActivationError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+
+        return Response(self._activation_payload(provider_config, is_active=False))
+
+    def _activation_payload(
+        self,
+        provider_config: WorkspaceAIProviderConfig,
+        *,
+        is_active: bool,
+    ) -> dict:
+        return {
+            'success': True,
+            'id': str(provider_config.id),
+            'provider': provider_config.provider,
+            'model_name': provider_config.model_name,
+            'is_active': is_active,
+            'message': (
+                'Provider ativado com sucesso.'
+                if is_active
+                else 'Provider desativado com sucesso.'
+            ),
+        }

@@ -231,10 +231,16 @@ Administradores do workspace podem gerenciar configuracoes de providers de IA pe
 - `PUT /api/workspaces/{workspace_id}/ai-providers/{id}/`
 - `PATCH /api/workspaces/{workspace_id}/ai-providers/{id}/`
 - `POST /api/workspaces/{workspace_id}/ai-providers/{id}/test/`
+- `POST /api/workspaces/{workspace_id}/ai-providers/{id}/activate/`
+- `POST /api/workspaces/{workspace_id}/ai-providers/{id}/deactivate/`
 
 O `workspace_id` vem da URL e e repassado ao serializer pelo contexto; payloads com workspace sao rejeitados. `api_key` permanece apenas `write_only`, e respostas usam `has_api_key` para indicar credencial cadastrada. Apenas OpenAI esta funcional no runtime atual; Anthropic e Google continuam sem adapter e nao podem ser criados ou ativados pelo self-service.
 
 O endpoint de teste de conexao tambem exige owner/admin do workspace. Ele pode usar a credencial salva ou uma `api_key` temporaria enviada no body; essa chave temporaria nao e salva, nao ativa automaticamente o provider e nunca aparece em resposta ou log. O teste faz uma chamada externa minima ao provider em runtime, com resposta sanitizada; os testes automatizados usam mocks.
+
+Ativacao e desativacao usam endpoints dedicados e tambem exigem owner/admin do workspace; agentes comuns nao podem executar essas acoes. O endpoint de ativacao valida a conexao usando somente a credencial salva antes de alterar o estado. Se o teste falhar, o provider permanece inativo e a resposta retorna apenas erro sanitizado, sem credenciais ou payload bruto do provider. Ao ativar um provider, os demais providers do mesmo workspace sao desativados atomicamente dentro de transacao PostgreSQL; providers de outros workspaces nao sao afetados.
+
+O endpoint de desativacao nao chama provider externo, nao remove configuracao, nao apaga `api_key`, `settings`, `system_prompt` ou `model_name`. O campo `is_active` nao deve ser enviado em `POST`, `PUT` ou `PATCH` genericos; use exclusivamente `/activate/` e `/deactivate/` para mudar esse estado.
 
 Antes de deploy:
 

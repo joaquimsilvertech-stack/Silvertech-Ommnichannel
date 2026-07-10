@@ -44,5 +44,23 @@ urlpatterns = [
         ),
         name='workspace-ai-provider-test',
     ),
+    path(
+        '<uuid:workspace_id>/ai-providers/<uuid:pk>/activate/',
+        WorkspaceAIProviderConfigViewSet.as_view(
+            {
+                'post': 'activate_provider',
+            },
+        ),
+        name='workspace-ai-provider-activate',
+    ),
+    path(
+        '<uuid:workspace_id>/ai-providers/<uuid:pk>/deactivate/',
+        WorkspaceAIProviderConfigViewSet.as_view(
+            {
+                'post': 'deactivate_provider',
+            },
+        ),
+        name='workspace-ai-provider-deactivate',
+    ),
     path('', include(router.urls)),
 ]

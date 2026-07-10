@@ -216,6 +216,7 @@ class WorkspaceAIProviderConfigSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         self._reject_payload_workspace()
+        self._reject_payload_is_active()
         workspace = self._get_workspace()
 
         provider = attrs.get('provider', self.instance.provider if self.instance else None)
@@ -228,10 +229,6 @@ class WorkspaceAIProviderConfigSerializer(serializers.ModelSerializer):
 
         if 'api_key' in attrs:
             attrs['api_key'] = self._validate_api_key_value(attrs['api_key'])
-
-        if attrs.get('is_active') is True:
-            self._validate_supported_provider(provider)
-            self._validate_single_active_provider(workspace)
 
         if self.instance is None and not attrs.get('api_key'):
             raise serializers.ValidationError('Credencial obrigatoria para criar provider.')
@@ -283,6 +280,13 @@ class WorkspaceAIProviderConfigSerializer(serializers.ModelSerializer):
         initial_data = getattr(self, 'initial_data', {}) or {}
         if 'workspace' in initial_data or 'workspace_id' in initial_data:
             raise serializers.ValidationError('Workspace deve ser definido pelo contexto.')
+
+    def _reject_payload_is_active(self) -> None:
+        initial_data = getattr(self, 'initial_data', {}) or {}
+        if 'is_active' in initial_data:
+            raise serializers.ValidationError(
+                'Use os endpoints de ativacao/desativacao para alterar is_active.',
+            )
 
     def _validate_instance_workspace(self, workspace: Workspace) -> None:
         if self.instance.workspace_id != workspace.id:
