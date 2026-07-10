@@ -25,11 +25,15 @@ def _client_for(user) -> APIClient:
 
 
 def _list_url(workspace) -> str:
-    return f'/api/workspaces/workspaces/{workspace.id}/ai-providers/'
+    return f'/api/workspaces/{workspace.id}/ai-providers/'
 
 
 def _detail_url(workspace, config) -> str:
-    return f'/api/workspaces/workspaces/{workspace.id}/ai-providers/{config.id}/'
+    return f'/api/workspaces/{workspace.id}/ai-providers/{config.id}/'
+
+
+def _old_duplicate_list_url(workspace) -> str:
+    return f'/api/workspaces/workspaces/{workspace.id}/ai-providers/'
 
 
 def _payload(**overrides):
@@ -98,6 +102,15 @@ def test_admin_can_list_configs() -> None:
 
     assert response.status_code == status.HTTP_200_OK
     assert response.json()[0]['id'] == str(config.id)
+
+
+@pytest.mark.django_db
+def test_old_duplicate_list_route_no_longer_exists() -> None:
+    client, _, workspace = _admin_client()
+
+    response = client.get(_old_duplicate_list_url(workspace))
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
 @pytest.mark.django_db

@@ -15,7 +15,7 @@ router.register('invites', WorkspaceInviteViewSet, basename='workspace-invite')
 
 urlpatterns = [
     path(
-        'workspaces/<uuid:workspace_id>/ai-providers/',
+        '<uuid:workspace_id>/ai-providers/',
         WorkspaceAIProviderConfigViewSet.as_view(
             {
                 'get': 'list',
@@ -25,7 +25,7 @@ urlpatterns = [
         name='workspace-ai-provider-list',
     ),
     path(
-        'workspaces/<uuid:workspace_id>/ai-providers/<uuid:pk>/',
+        '<uuid:workspace_id>/ai-providers/<uuid:pk>/',
         WorkspaceAIProviderConfigViewSet.as_view(
             {
                 'get': 'retrieve',

@@ -225,11 +225,11 @@ As `settings` do provider sao validadas por allowlist e bloqueiam chaves sensive
 
 Administradores do workspace podem gerenciar configuracoes de providers de IA pelos endpoints:
 
-- `GET /api/workspaces/workspaces/{workspace_id}/ai-providers/`
-- `POST /api/workspaces/workspaces/{workspace_id}/ai-providers/`
-- `GET /api/workspaces/workspaces/{workspace_id}/ai-providers/{id}/`
-- `PUT /api/workspaces/workspaces/{workspace_id}/ai-providers/{id}/`
-- `PATCH /api/workspaces/workspaces/{workspace_id}/ai-providers/{id}/`
+- `GET /api/workspaces/{workspace_id}/ai-providers/`
+- `POST /api/workspaces/{workspace_id}/ai-providers/`
+- `GET /api/workspaces/{workspace_id}/ai-providers/{id}/`
+- `PUT /api/workspaces/{workspace_id}/ai-providers/{id}/`
+- `PATCH /api/workspaces/{workspace_id}/ai-providers/{id}/`
 
 O `workspace_id` vem da URL e e repassado ao serializer pelo contexto; payloads com workspace sao rejeitados. `api_key` permanece apenas `write_only`, e respostas usam `has_api_key` para indicar credencial cadastrada. Apenas OpenAI esta funcional no runtime atual; Anthropic e Google continuam sem adapter e nao podem ser criados ou ativados pelo self-service.
 
