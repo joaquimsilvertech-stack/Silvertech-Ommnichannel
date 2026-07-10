@@ -230,10 +230,11 @@ Administradores do workspace podem gerenciar configuracoes de providers de IA pe
 - `GET /api/workspaces/{workspace_id}/ai-providers/{id}/`
 - `PUT /api/workspaces/{workspace_id}/ai-providers/{id}/`
 - `PATCH /api/workspaces/{workspace_id}/ai-providers/{id}/`
+- `POST /api/workspaces/{workspace_id}/ai-providers/{id}/test/`
 
 O `workspace_id` vem da URL e e repassado ao serializer pelo contexto; payloads com workspace sao rejeitados. `api_key` permanece apenas `write_only`, e respostas usam `has_api_key` para indicar credencial cadastrada. Apenas OpenAI esta funcional no runtime atual; Anthropic e Google continuam sem adapter e nao podem ser criados ou ativados pelo self-service.
 
-Nao existe endpoint de teste de credencial nesta parte, e salvar configuracoes nao faz chamada externa a providers.
+O endpoint de teste de conexao tambem exige owner/admin do workspace. Ele pode usar a credencial salva ou uma `api_key` temporaria enviada no body; essa chave temporaria nao e salva, nao ativa automaticamente o provider e nunca aparece em resposta ou log. O teste faz uma chamada externa minima ao provider em runtime, com resposta sanitizada; os testes automatizados usam mocks.
 
 Antes de deploy:
 

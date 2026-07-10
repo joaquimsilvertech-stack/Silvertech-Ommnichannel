@@ -12,11 +12,16 @@ from rest_framework.response import Response
 
 from crm.mixins import WorkspaceScopedQuerysetMixin
 from core.sanitization import mask_email
+from omnichannel.ai.connection_test import (
+    get_connection_test_http_status,
+    test_ai_provider_connection,
+)
 
 from .models import Member, Workspace, WorkspaceAIProviderConfig, WorkspaceInvite
 from .permissions import IsWorkspaceAdminMember
 from .serializers import (
     MemberSerializer,
+    WorkspaceAIProviderConnectionTestSerializer,
     WorkspaceAIProviderConfigSerializer,
     WorkspaceInviteSerializer,
     WorkspaceSerializer,
@@ -91,6 +96,12 @@ class WorkspaceAIProviderConfigViewSet(
     serializer_class = WorkspaceAIProviderConfigSerializer
     permission_classes = [IsAuthenticated, IsWorkspaceAdminMember]
     http_method_names = ['get', 'post', 'put', 'patch', 'head', 'options']
+    test_connection_throttle_scope = 'ai_provider_test_connection'
+
+    def get_throttles(self):
+        if getattr(self, 'action', None) == 'test_connection':
+            self.throttle_scope = self.test_connection_throttle_scope
+        return super().get_throttles()
 
     def get_workspace(self) -> Workspace:
         if not hasattr(self, '_workspace'):
@@ -132,3 +143,26 @@ class WorkspaceAIProviderConfigViewSet(
             raise serializers.ValidationError(
                 'Configuracao de provider invalida para este workspace.',
             ) from exc
+
+    def test_connection(self, request, *args, **kwargs):
+        provider_config = self.get_object()
+        input_serializer = WorkspaceAIProviderConnectionTestSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+
+        result = test_ai_provider_connection(
+            provider_config=provider_config,
+            api_key_override=input_serializer.validated_data.get('api_key'),
+        )
+        payload = {
+            'success': result.success,
+            'provider': result.provider,
+            'model_name': result.model_name,
+            'message': result.message,
+        }
+        if result.error_code:
+            payload['error_code'] = result.error_code
+
+        return Response(
+            payload,
+            status=get_connection_test_http_status(result),
+        )

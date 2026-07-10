@@ -35,5 +35,14 @@ urlpatterns = [
         ),
         name='workspace-ai-provider-detail',
     ),
+    path(
+        '<uuid:workspace_id>/ai-providers/<uuid:pk>/test/',
+        WorkspaceAIProviderConfigViewSet.as_view(
+            {
+                'post': 'test_connection',
+            },
+        ),
+        name='workspace-ai-provider-test',
+    ),
     path('', include(router.urls)),
 ]

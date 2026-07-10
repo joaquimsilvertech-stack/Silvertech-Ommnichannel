@@ -197,6 +197,7 @@ REST_FRAMEWORK = {
         'user': '10000/minute',
         'auth': '5/minute',
         'webhook': '120/minute',
+        'ai_provider_test_connection': '5/minute',
     },
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }

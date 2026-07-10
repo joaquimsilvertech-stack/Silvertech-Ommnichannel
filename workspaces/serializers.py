@@ -11,6 +11,20 @@ User = get_user_model()
 MAX_SYSTEM_PROMPT_LENGTH = 12000
 
 
+def validate_provider_api_key_value(value: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or not value.strip()
+        or value != value.strip()
+        or '\n' in value
+        or '\r' in value
+        or len(value) < 8
+    ):
+        raise serializers.ValidationError('Credencial invalida.')
+    return value
+
+
 class WorkspaceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Workspace
@@ -283,17 +297,7 @@ class WorkspaceAIProviderConfigSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('Provider nao suportado para self-service.')
 
     def _validate_api_key_value(self, value: str) -> str:
-        if (
-            not isinstance(value, str)
-            or not value
-            or not value.strip()
-            or value != value.strip()
-            or '\n' in value
-            or '\r' in value
-            or len(value) < 8
-        ):
-            raise serializers.ValidationError('Credencial invalida.')
-        return value
+        return validate_provider_api_key_value(value)
 
     def _validate_single_active_provider(self, workspace: Workspace) -> None:
         queryset = WorkspaceAIProviderConfig.objects.filter(
@@ -318,3 +322,18 @@ class WorkspaceAIProviderConfigSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(str(exc)) from exc
 
         return settings
+
+
+class WorkspaceAIProviderConnectionTestSerializer(serializers.Serializer):
+    api_key = serializers.CharField(
+        write_only=True,
+        required=False,
+        allow_blank=True,
+        trim_whitespace=False,
+        style={'input_type': 'password'},
+    )
+
+    def validate(self, attrs):
+        if 'api_key' in attrs:
+            attrs['api_key'] = validate_provider_api_key_value(attrs['api_key'])
+        return attrs
