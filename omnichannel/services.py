@@ -8,9 +8,12 @@ from typing import Any
 
 import requests
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import transaction
 
 from crm.models import Contact
+from omnichannel.ai.registry import is_provider_supported
+from workspaces.models import Workspace, WorkspaceAIProviderConfig
 
 from .models import Conversation, Message
 
@@ -18,6 +21,23 @@ logger = logging.getLogger(__name__)
 
 WHATSAPP_CHANNEL = 'whatsapp'
 RECENT_AI_MESSAGES_LIMIT = 15
+AI_SKIP_NO_ACTIVE_PROVIDER = 'NO_ACTIVE_PROVIDER'
+AI_SKIP_UNSUPPORTED_PROVIDER = 'UNSUPPORTED_PROVIDER'
+AI_SKIP_MISSING_API_KEY = 'MISSING_API_KEY'
+AI_SKIP_CONVERSATION_HANDOFF = 'CONVERSATION_HANDOFF'
+AI_SKIP_MESSAGE_NOT_INBOUND = 'MESSAGE_NOT_INBOUND'
+AI_SKIP_MESSAGE_FROM_ME = 'MESSAGE_FROM_ME'
+AI_SKIP_UNSUPPORTED_GROUP_MESSAGE = 'UNSUPPORTED_GROUP_MESSAGE'
+AI_SKIP_EMPTY_CONTENT = 'EMPTY_CONTENT'
+AI_SKIP_NON_PROCESSABLE_CONTENT = 'NON_PROCESSABLE_CONTENT'
+NON_PROCESSABLE_MESSAGE_TYPES = {
+    'audioMessage',
+    'documentMessage',
+    'imageMessage',
+    'reactionMessage',
+    'stickerMessage',
+    'videoMessage',
+}
 
 
 def _normalize_whatsapp_jid(remote_jid: str) -> str:
@@ -38,6 +58,92 @@ def _extract_evolution_text(message: dict[str, Any]) -> str | None:
             return str(text)
 
     return None
+
+
+def is_message_processable_for_ai(message: Message) -> tuple[bool, str | None]:
+    """Retorna se uma mensagem salva pode ser enviada ao motor de IA."""
+    body = message.body
+    if body is None or not str(body).strip():
+        return False, AI_SKIP_EMPTY_CONTENT
+
+    message_type = getattr(message, 'ai_message_type', None)
+    if message_type in NON_PROCESSABLE_MESSAGE_TYPES:
+        return False, AI_SKIP_NON_PROCESSABLE_CONTENT
+
+    return True, None
+
+
+def should_schedule_ai_response(
+    *,
+    workspace: Workspace,
+    conversation: Conversation,
+    message: Message,
+) -> tuple[bool, str | None]:
+    """Decide localmente se uma inbound pode agendar resposta automatica de IA."""
+    if message.direction != Message.Direction.INBOUND:
+        return False, AI_SKIP_MESSAGE_NOT_INBOUND
+
+    if getattr(message, 'ai_from_me', False):
+        return False, AI_SKIP_MESSAGE_FROM_ME
+
+    remote_jid = getattr(message, 'ai_remote_jid', '')
+    if isinstance(remote_jid, str) and remote_jid.endswith('@g.us'):
+        return False, AI_SKIP_UNSUPPORTED_GROUP_MESSAGE
+
+    is_processable, reason_code = is_message_processable_for_ai(message)
+    if not is_processable:
+        return False, reason_code
+
+    if conversation.is_human_handoff:
+        return False, AI_SKIP_CONVERSATION_HANDOFF
+
+    provider_config = (
+        WorkspaceAIProviderConfig.objects.filter(
+            workspace=workspace,
+            is_active=True,
+        )
+        .only('api_key', 'provider')
+        .first()
+    )
+    if provider_config is None:
+        return False, AI_SKIP_NO_ACTIVE_PROVIDER
+
+    if not is_provider_supported(provider_config.provider):
+        return False, AI_SKIP_UNSUPPORTED_PROVIDER
+
+    if not provider_config.api_key:
+        return False, AI_SKIP_MISSING_API_KEY
+
+    return True, None
+
+
+def schedule_ai_response_after_commit(
+    *,
+    conversation: Conversation,
+    source_message: Message,
+) -> None:
+    """Agenda a resposta de IA apenas apos commit da mensagem inbound."""
+
+    def _enqueue() -> None:
+        try:
+            from omnichannel.tasks import process_ai_response
+
+            process_ai_response.delay(
+                conversation_id=str(conversation.id),
+                source_message_id=str(source_message.id),
+            )
+        except Exception as exc:
+            logger.exception(
+                'Falha ao agendar resposta de IA',
+                extra={
+                    'workspace_id': str(conversation.workspace_id),
+                    'conversation_id': str(conversation.id),
+                    'source_message_id': str(source_message.id),
+                    'exception_type': type(exc).__name__,
+                },
+            )
+
+    transaction.on_commit(_enqueue)
 
 
 def build_conversation_context_for_ai(
@@ -80,11 +186,25 @@ def _upsert_inbound_message(
     contact_name: str,
     body: str,
     external_id: str | None,
+    remote_jid: str | None = None,
+    from_me: bool = False,
+    message_type: str | None = None,
 ) -> None:
     """Cria ou reutiliza Contact/Conversation e persiste Message inbound."""
     with transaction.atomic():
+        try:
+            workspace = Workspace.objects.filter(id=workspace_id).first()
+        except (TypeError, ValueError, ValidationError):
+            workspace = None
+        if workspace is None:
+            logger.info(
+                'Webhook WhatsApp ignorado: workspace inexistente',
+                extra={'workspace_id': str(workspace_id)},
+            )
+            return
+
         contact, created = Contact.objects.get_or_create(
-            workspace_id=workspace_id,
+            workspace=workspace,
             phone=phone,
             defaults={
                 'name': contact_name,
@@ -104,18 +224,43 @@ def _upsert_inbound_message(
 
         if conversation is None:
             conversation = Conversation.objects.create(
-                workspace_id=workspace_id,
+                workspace=workspace,
                 contact=contact,
                 channel=WHATSAPP_CHANNEL,
                 status=Conversation.Status.OPEN,
             )
 
-        Message.objects.create(
+        message = Message.objects.create(
             conversation=conversation,
             body=body,
             direction=Message.Direction.INBOUND,
             status=Message.Status.DELIVERED,
             external_id=external_id,
+        )
+        message.ai_from_me = from_me
+        message.ai_remote_jid = remote_jid
+        message.ai_message_type = message_type
+
+        should_schedule, reason_code = should_schedule_ai_response(
+            workspace=workspace,
+            conversation=conversation,
+            message=message,
+        )
+        if should_schedule:
+            schedule_ai_response_after_commit(
+                conversation=conversation,
+                source_message=message,
+            )
+            return
+
+        logger.info(
+            'Resposta automatica de IA nao agendada',
+            extra={
+                'workspace_id': str(workspace.id),
+                'conversation_id': str(conversation.id),
+                'message_id': str(message.id),
+                'reason_code': reason_code,
+            },
         )
 
 
@@ -126,6 +271,10 @@ def _process_evolution_message(data: dict[str, Any], workspace_id: str) -> None:
         return
 
     if key.get('fromMe') is True:
+        _log_ai_schedule_skip(
+            workspace_id=workspace_id,
+            reason_code=AI_SKIP_MESSAGE_FROM_ME,
+        )
         return
 
     remote_jid = key.get('remoteJid')
@@ -134,14 +283,31 @@ def _process_evolution_message(data: dict[str, Any], workspace_id: str) -> None:
 
     remote_jid = str(remote_jid)
     if remote_jid.endswith('@g.us'):
+        _log_ai_schedule_skip(
+            workspace_id=workspace_id,
+            reason_code=AI_SKIP_UNSUPPORTED_GROUP_MESSAGE,
+        )
         return
 
     message = data.get('message')
     if not isinstance(message, dict):
         return
 
+    message_type = data.get('messageType')
+    if message_type is None and len(message) == 1:
+        message_type = next(iter(message.keys()))
+
     body = _extract_evolution_text(message)
     if not body:
+        reason_code = (
+            AI_SKIP_NON_PROCESSABLE_CONTENT
+            if message_type in NON_PROCESSABLE_MESSAGE_TYPES
+            else AI_SKIP_EMPTY_CONTENT
+        )
+        _log_ai_schedule_skip(
+            workspace_id=workspace_id,
+            reason_code=reason_code,
+        )
         return
 
     phone = _normalize_whatsapp_jid(remote_jid)
@@ -154,6 +320,19 @@ def _process_evolution_message(data: dict[str, Any], workspace_id: str) -> None:
         contact_name=contact_name,
         body=body,
         external_id=str(external_id) if external_id else None,
+        remote_jid=remote_jid,
+        from_me=False,
+        message_type=str(message_type) if message_type else None,
+    )
+
+
+def _log_ai_schedule_skip(*, workspace_id: str, reason_code: str) -> None:
+    logger.info(
+        'Resposta automatica de IA nao agendada',
+        extra={
+            'workspace_id': str(workspace_id),
+            'reason_code': reason_code,
+        },
     )
 
 

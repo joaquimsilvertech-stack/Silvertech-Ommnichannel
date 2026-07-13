@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -74,6 +75,35 @@ def test_process_ai_response_creates_outbound_message_and_sends_whatsapp() -> No
 
 
 @pytest.mark.django_db
+def test_process_ai_response_accepts_valid_source_message_id() -> None:
+    conversation = ConversationFactory(contact__phone='5511999999999')
+    WorkspaceAIProviderConfigFactory(
+        workspace=conversation.workspace,
+        api_key='sk-source-message-key',
+        system_prompt='Prompt com mensagem fonte',
+    )
+    inbound = MessageFactory(
+        conversation=conversation,
+        direction=Message.Direction.INBOUND,
+        body='Mensagem que disparou a IA.',
+    )
+    adapter = _adapter('Resposta com source message.')
+
+    with (
+        patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter) as mock_registry,
+        patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+    ):
+        message_id = process_ai_response.run(
+            str(conversation.id),
+            source_message_id=str(inbound.id),
+        )
+
+    assert message_id is not None
+    mock_registry.assert_called_once()
+    mock_send_whatsapp.assert_called_once_with('5511999999999', 'Resposta com source message.')
+
+
+@pytest.mark.django_db
 def test_process_ai_response_skips_human_handoff() -> None:
     conversation = ConversationFactory(is_human_handoff=True)
 
@@ -82,6 +112,27 @@ def test_process_ai_response_skips_human_handoff() -> None:
         patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
     ):
         result = process_ai_response.run(str(conversation.id))
+
+    assert result is None
+    assert not Message.objects.filter(
+        conversation=conversation,
+        direction=Message.Direction.OUTBOUND,
+    ).exists()
+    mock_registry.assert_not_called()
+    mock_send_whatsapp.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_process_ai_response_with_source_message_skips_human_handoff() -> None:
+    conversation = ConversationFactory(is_human_handoff=True)
+    WorkspaceAIProviderConfigFactory(workspace=conversation.workspace, api_key='sk-handoff-source-key')
+    inbound = MessageFactory(conversation=conversation, direction=Message.Direction.INBOUND)
+
+    with (
+        patch('omnichannel.ai.registry.get_provider_adapter') as mock_registry,
+        patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+    ):
+        result = process_ai_response.run(str(conversation.id), source_message_id=str(inbound.id))
 
     assert result is None
     assert not Message.objects.filter(
@@ -106,6 +157,140 @@ def test_process_ai_response_skips_inactive_provider_config() -> None:
         patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
     ):
         result = process_ai_response.run(str(conversation.id))
+
+    assert result is None
+    mock_registry.assert_not_called()
+    mock_send_whatsapp.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_process_ai_response_skips_missing_source_message() -> None:
+    conversation = ConversationFactory()
+    WorkspaceAIProviderConfigFactory(workspace=conversation.workspace, api_key='sk-missing-source-key')
+
+    with (
+        patch('omnichannel.ai.registry.get_provider_adapter') as mock_registry,
+        patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+    ):
+        result = process_ai_response.run(
+            str(conversation.id),
+            source_message_id=str(uuid.uuid4()),
+        )
+
+    assert result is None
+    mock_registry.assert_not_called()
+    mock_send_whatsapp.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_process_ai_response_skips_source_message_from_other_conversation() -> None:
+    conversation = ConversationFactory()
+    other_conversation = ConversationFactory()
+    WorkspaceAIProviderConfigFactory(workspace=conversation.workspace, api_key='sk-other-source-key')
+    source_message = MessageFactory(
+        conversation=other_conversation,
+        direction=Message.Direction.INBOUND,
+    )
+
+    with (
+        patch('omnichannel.ai.registry.get_provider_adapter') as mock_registry,
+        patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+    ):
+        result = process_ai_response.run(
+            str(conversation.id),
+            source_message_id=str(source_message.id),
+        )
+
+    assert result is None
+    mock_registry.assert_not_called()
+    mock_send_whatsapp.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_process_ai_response_skips_outbound_source_message() -> None:
+    conversation = ConversationFactory()
+    WorkspaceAIProviderConfigFactory(workspace=conversation.workspace, api_key='sk-outbound-source-key')
+    source_message = MessageFactory(
+        conversation=conversation,
+        direction=Message.Direction.OUTBOUND,
+        body='Outbound nao pode disparar IA.',
+    )
+
+    with (
+        patch('omnichannel.ai.registry.get_provider_adapter') as mock_registry,
+        patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+    ):
+        result = process_ai_response.run(
+            str(conversation.id),
+            source_message_id=str(source_message.id),
+        )
+
+    assert result is None
+    assert not Message.objects.filter(
+        conversation=conversation,
+        direction=Message.Direction.OUTBOUND,
+    ).exclude(id=source_message.id).exists()
+    mock_registry.assert_not_called()
+    mock_send_whatsapp.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_process_ai_response_skips_empty_source_message() -> None:
+    conversation = ConversationFactory()
+    WorkspaceAIProviderConfigFactory(workspace=conversation.workspace, api_key='sk-empty-source-key')
+    source_message = MessageFactory(
+        conversation=conversation,
+        direction=Message.Direction.INBOUND,
+        body=' ',
+    )
+
+    with (
+        patch('omnichannel.ai.registry.get_provider_adapter') as mock_registry,
+        patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+    ):
+        result = process_ai_response.run(
+            str(conversation.id),
+            source_message_id=str(source_message.id),
+        )
+
+    assert result is None
+    mock_registry.assert_not_called()
+    mock_send_whatsapp.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_process_ai_response_skips_missing_provider_with_source_message() -> None:
+    conversation = ConversationFactory()
+    source_message = MessageFactory(conversation=conversation, direction=Message.Direction.INBOUND)
+
+    with (
+        patch('omnichannel.ai.registry.get_provider_adapter') as mock_registry,
+        patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+    ):
+        result = process_ai_response.run(
+            str(conversation.id),
+            source_message_id=str(source_message.id),
+        )
+
+    assert result is None
+    mock_registry.assert_not_called()
+    mock_send_whatsapp.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_process_ai_response_skips_missing_api_key_with_source_message() -> None:
+    conversation = ConversationFactory()
+    WorkspaceAIProviderConfigFactory(workspace=conversation.workspace, api_key='')
+    source_message = MessageFactory(conversation=conversation, direction=Message.Direction.INBOUND)
+
+    with (
+        patch('omnichannel.ai.registry.get_provider_adapter') as mock_registry,
+        patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+    ):
+        result = process_ai_response.run(
+            str(conversation.id),
+            source_message_id=str(source_message.id),
+        )
 
     assert result is None
     mock_registry.assert_not_called()

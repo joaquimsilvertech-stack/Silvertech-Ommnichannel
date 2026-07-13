@@ -242,6 +242,14 @@ Ativacao e desativacao usam endpoints dedicados e tambem exigem owner/admin do w
 
 O endpoint de desativacao nao chama provider externo, nao remove configuracao, nao apaga `api_key`, `settings`, `system_prompt` ou `model_name`. O campo `is_active` nao deve ser enviado em `POST`, `PUT` ou `PATCH` genericos; use exclusivamente `/activate/` e `/deactivate/` para mudar esse estado.
 
+## Ligacao Automatica Webhook -> IA
+
+Mensagens inbound validas recebidas pelo webhook da Evolution API podem agendar uma resposta automatica de IA. O agendamento acontece com `transaction.on_commit`, depois que a mensagem inbound foi persistida com sucesso; o webhook nao chama OpenAI, nao chama adapter de provider e nao envia resposta diretamente pela Evolution API.
+
+A IA nao e agendada para mensagens `fromMe`, grupos nao suportados, mensagens vazias ou sem conteudo textual processavel, conversas em handoff humano ou workspaces sem provider ativo. Para disparar automaticamente, o workspace precisa ter um `WorkspaceAIProviderConfig` ativo, suportado no runtime e com `api_key` salva. Nenhuma credencial e incluida em resposta ou log.
+
+Nesta etapa nao ha idempotencia persistente por mensagem; `source_message_id` ja e repassado para preparar a Parte 10. O status correto de mensagens outbound (`PENDING`, `SENT`, `FAILED` e `external_id`) sera tratado na Parte 11.
+
 Antes de deploy:
 
 ```bash
