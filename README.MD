@@ -248,7 +248,11 @@ Mensagens inbound validas recebidas pelo webhook da Evolution API podem agendar 
 
 A IA nao e agendada para mensagens `fromMe`, grupos nao suportados, mensagens vazias ou sem conteudo textual processavel, conversas em handoff humano ou workspaces sem provider ativo. Para disparar automaticamente, o workspace precisa ter um `WorkspaceAIProviderConfig` ativo, suportado no runtime e com `api_key` salva. Nenhuma credencial e incluida em resposta ou log.
 
-Nesta etapa nao ha idempotencia persistente por mensagem; `source_message_id` ja e repassado para preparar a Parte 10. O status correto de mensagens outbound (`PENDING`, `SENT`, `FAILED` e `external_id`) sera tratado na Parte 11.
+### Idempotencia por mensagem
+
+Cada mensagem inbound processada automaticamente com `source_message_id` pode ter no maximo um `AIProcessingRun`. A relacao unica com `source_message` impede duas respostas de IA para a mesma mensagem, inclusive em execucoes repetidas da task ou disputas concorrentes entre workers protegidas por `transaction.atomic`, `select_for_update` e constraint no banco.
+
+Chamadas retrocompativeis com `source_message_id=None` continuam funcionando sem idempotencia persistente. `AIProcessingRun` nao armazena credenciais, payload bruto do webhook, corpo completo da mensagem nem resposta bruta do provider. Retry/backoff avancado fica para a Parte 12, e o status correto de mensagens outbound (`PENDING`, `SENT`, `FAILED` e `external_id`) sera tratado na Parte 11.
 
 Antes de deploy:
 

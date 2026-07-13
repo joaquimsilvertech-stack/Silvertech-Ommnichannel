@@ -9,13 +9,14 @@ from typing import Any
 import requests
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
+from django.utils import timezone
 
 from crm.models import Contact
 from omnichannel.ai.registry import is_provider_supported
 from workspaces.models import Workspace, WorkspaceAIProviderConfig
 
-from .models import Conversation, Message
+from .models import AIProcessingRun, Conversation, Message
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,10 @@ NON_PROCESSABLE_MESSAGE_TYPES = {
     'stickerMessage',
     'videoMessage',
 }
+AI_PROCESSING_ALREADY_SUCCEEDED = 'ALREADY_SUCCEEDED'
+AI_PROCESSING_ALREADY_RUNNING = 'ALREADY_RUNNING'
+AI_PROCESSING_ALREADY_FAILED = 'ALREADY_FAILED'
+AI_PROCESSING_ALREADY_SKIPPED = 'ALREADY_SKIPPED'
 
 
 def _normalize_whatsapp_jid(remote_jid: str) -> str:
@@ -144,6 +149,161 @@ def schedule_ai_response_after_commit(
             )
 
     transaction.on_commit(_enqueue)
+
+
+def claim_ai_processing_run(
+    *,
+    source_message: Message,
+    provider_config: WorkspaceAIProviderConfig,
+) -> tuple[AIProcessingRun | None, str | None]:
+    """Assume de forma idempotente o processamento de IA de uma inbound."""
+    now = timezone.now()
+    try:
+        with transaction.atomic():
+            run = AIProcessingRun.objects.create(
+                workspace=source_message.conversation.workspace,
+                conversation=source_message.conversation,
+                source_message=source_message,
+                provider_config=provider_config,
+                status=AIProcessingRun.Status.RUNNING,
+                attempt_count=1,
+                started_at=now,
+            )
+            logger.info(
+                'AIProcessingRun criado',
+                extra={
+                    'workspace_id': str(run.workspace_id),
+                    'conversation_id': str(run.conversation_id),
+                    'source_message_id': str(run.source_message_id),
+                    'ai_processing_run_id': str(run.id),
+                    'provider': provider_config.provider,
+                    'model_name': provider_config.model_name,
+                    'status': run.status,
+                },
+            )
+            return run, None
+    except IntegrityError:
+        with transaction.atomic():
+            run = AIProcessingRun.objects.select_for_update().get(
+                source_message=source_message,
+            )
+            reason_code = {
+                AIProcessingRun.Status.SUCCEEDED: AI_PROCESSING_ALREADY_SUCCEEDED,
+                AIProcessingRun.Status.RUNNING: AI_PROCESSING_ALREADY_RUNNING,
+                AIProcessingRun.Status.FAILED: AI_PROCESSING_ALREADY_FAILED,
+                AIProcessingRun.Status.SKIPPED: AI_PROCESSING_ALREADY_SKIPPED,
+            }.get(run.status, AI_PROCESSING_ALREADY_RUNNING)
+            logger.info(
+                'AIProcessingRun existente impede duplicidade',
+                extra={
+                    'workspace_id': str(run.workspace_id),
+                    'conversation_id': str(run.conversation_id),
+                    'source_message_id': str(run.source_message_id),
+                    'ai_processing_run_id': str(run.id),
+                    'status': run.status,
+                    'reason_code': reason_code,
+                },
+            )
+            return None, reason_code
+
+
+def mark_ai_processing_succeeded(
+    *,
+    run: AIProcessingRun,
+    output_message: Message,
+) -> AIProcessingRun:
+    with transaction.atomic():
+        locked_run = AIProcessingRun.objects.select_for_update().get(id=run.id)
+        locked_run.status = AIProcessingRun.Status.SUCCEEDED
+        locked_run.output_message = output_message
+        locked_run.error_code = ''
+        locked_run.finished_at = timezone.now()
+        locked_run.save(
+            update_fields=[
+                'status',
+                'output_message',
+                'error_code',
+                'finished_at',
+                'updated_at',
+            ],
+        )
+        logger.info(
+            'AIProcessingRun concluido',
+            extra={
+                'workspace_id': str(locked_run.workspace_id),
+                'conversation_id': str(locked_run.conversation_id),
+                'source_message_id': str(locked_run.source_message_id),
+                'ai_processing_run_id': str(locked_run.id),
+                'status': locked_run.status,
+            },
+        )
+        return locked_run
+
+
+def mark_ai_processing_failed(
+    *,
+    run: AIProcessingRun,
+    error_code: str,
+) -> AIProcessingRun:
+    return _mark_ai_processing_finished(
+        run=run,
+        status=AIProcessingRun.Status.FAILED,
+        error_code=error_code,
+    )
+
+
+def mark_ai_processing_skipped(
+    *,
+    run: AIProcessingRun,
+    error_code: str,
+) -> AIProcessingRun:
+    return _mark_ai_processing_finished(
+        run=run,
+        status=AIProcessingRun.Status.SKIPPED,
+        error_code=error_code,
+    )
+
+
+def _mark_ai_processing_finished(
+    *,
+    run: AIProcessingRun,
+    status: str,
+    error_code: str,
+) -> AIProcessingRun:
+    sanitized_error_code = _sanitize_ai_processing_error_code(error_code)
+    with transaction.atomic():
+        locked_run = AIProcessingRun.objects.select_for_update().get(id=run.id)
+        locked_run.status = status
+        locked_run.error_code = sanitized_error_code
+        locked_run.finished_at = timezone.now()
+        locked_run.save(
+            update_fields=[
+                'status',
+                'error_code',
+                'finished_at',
+                'updated_at',
+            ],
+        )
+        logger.info(
+            'AIProcessingRun finalizado sem sucesso',
+            extra={
+                'workspace_id': str(locked_run.workspace_id),
+                'conversation_id': str(locked_run.conversation_id),
+                'source_message_id': str(locked_run.source_message_id),
+                'ai_processing_run_id': str(locked_run.id),
+                'status': locked_run.status,
+                'error_code': locked_run.error_code,
+            },
+        )
+        return locked_run
+
+
+def _sanitize_ai_processing_error_code(error_code: str) -> str:
+    sanitized = ''.join(
+        char if char.isalnum() or char == '_' else '_'
+        for char in str(error_code or 'UNKNOWN_ERROR').upper()
+    )
+    return sanitized[:64] or 'UNKNOWN_ERROR'
 
 
 def build_conversation_context_for_ai(

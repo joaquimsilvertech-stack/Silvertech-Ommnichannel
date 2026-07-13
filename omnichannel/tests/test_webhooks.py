@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
@@ -8,8 +9,10 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from automations.models import Flow
+from omnichannel.ai.types import AIProviderResult
 from omnichannel.factories import ContactFactory
 from omnichannel.models import Conversation, Message
+from omnichannel.tasks import process_ai_response
 from omnichannel.services import process_whatsapp_payload
 from workspaces.factories import WorkspaceAIProviderConfigFactory
 from workspaces.models import AIProvider
@@ -316,3 +319,55 @@ def test_webhook_does_not_call_openai_evolution_or_create_outbound(
         conversation__workspace=tenant_workspace,
         direction=Message.Direction.OUTBOUND,
     ).exists()
+
+
+@pytest.mark.django_db
+def test_duplicate_ai_task_for_webhook_source_message_creates_single_response(
+    api_client: APIClient,
+    tenant_workspace: Workspace,
+) -> None:
+    WorkspaceAIProviderConfigFactory(workspace=tenant_workspace, api_key='sk-webhook-idempotent-key')
+    scheduled_kwargs = {}
+
+    def capture_delay(**kwargs):
+        scheduled_kwargs.update(kwargs)
+
+    adapter = MagicMock()
+    adapter.generate_response.return_value = AIProviderResult(
+        text='Resposta idempotente.',
+        provider=AIProvider.OPENAI,
+        model_name='gpt-4o-mini',
+        external_id='provider-idempotent-id',
+    )
+
+    with (
+        patch('omnichannel.views.process_whatsapp_webhook_task.delay', side_effect=_run_webhook_inline),
+        patch('omnichannel.services.transaction.on_commit', side_effect=lambda callback: callback()),
+        patch('omnichannel.tasks.process_ai_response.delay', side_effect=capture_delay),
+        patch('omnichannel.signals.send_event'),
+    ):
+        response = api_client.post(
+            f'/api/omnichannel/webhooks/whatsapp/?workspace={tenant_workspace.id}',
+            _payload(),
+            format='json',
+        )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert scheduled_kwargs['conversation_id']
+    assert scheduled_kwargs['source_message_id']
+
+    with (
+        patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter) as mock_registry,
+        patch('omnichannel.services.send_whatsapp_message') as mock_evolution,
+    ):
+        first_result = process_ai_response.run(**scheduled_kwargs)
+        second_result = process_ai_response.run(**scheduled_kwargs)
+
+    assert first_result is not None
+    assert second_result is None
+    assert Message.objects.filter(
+        conversation__workspace=tenant_workspace,
+        direction=Message.Direction.OUTBOUND,
+    ).count() == 1
+    mock_registry.assert_called_once()
+    mock_evolution.assert_called_once()

@@ -32,14 +32,21 @@ def process_ai_response(
         AIProviderUnavailableError,
         UnsupportedAIProviderError,
     )
-    from omnichannel.ai.registry import get_provider_adapter
+    from django.db import transaction
+
+    from omnichannel.ai.registry import get_provider_adapter, is_provider_supported
     from omnichannel.models import Conversation, Message
     from omnichannel.services import (
         build_conversation_context_for_ai,
+        claim_ai_processing_run,
         is_message_processable_for_ai,
+        mark_ai_processing_failed,
+        mark_ai_processing_succeeded,
         send_whatsapp_message,
     )
     from workspaces.models import WorkspaceAIProviderConfig
+
+    ai_processing_run = None
 
     try:
         conversation = Conversation.objects.select_related(
@@ -136,6 +143,29 @@ def process_ai_response(
         )
         return None
 
+    if not is_provider_supported(provider_config.provider):
+        _log_ai_task_skip(
+            'Task de IA ignorada: provider sem adapter ativo',
+            conversation=conversation,
+            source_message_id=source_message_id,
+            reason_code='UNSUPPORTED_PROVIDER',
+        )
+        return None
+
+    if source_message_id is not None:
+        ai_processing_run, claim_reason_code = claim_ai_processing_run(
+            source_message=source_message,
+            provider_config=provider_config,
+        )
+        if ai_processing_run is None:
+            _log_ai_task_skip(
+                'Task de IA ignorada: processamento idempotente existente',
+                conversation=conversation,
+                source_message_id=source_message_id,
+                reason_code=claim_reason_code or 'AI_PROCESSING_ALREADY_EXISTS',
+            )
+            return None
+
     messages = build_conversation_context_for_ai(
         conversation,
         system_prompt=provider_config.system_prompt,
@@ -158,6 +188,11 @@ def process_ai_response(
             provider_config=provider_config,
             exc=exc,
         )
+        if ai_processing_run is not None:
+            mark_ai_processing_failed(
+                run=ai_processing_run,
+                error_code='UNSUPPORTED_PROVIDER',
+            )
         return None
     except (
         AIProviderAuthenticationError,
@@ -174,14 +209,25 @@ def process_ai_response(
             provider_config=provider_config,
             exc=exc,
         )
+        if ai_processing_run is not None:
+            mark_ai_processing_failed(
+                run=ai_processing_run,
+                error_code=type(exc).__name__,
+            )
         return None
 
-    message = Message.objects.create(
-        conversation=conversation,
-        body=result.text,
-        direction=Message.Direction.OUTBOUND,
-        status=Message.Status.SENT,
-    )
+    with transaction.atomic():
+        message = Message.objects.create(
+            conversation=conversation,
+            body=result.text,
+            direction=Message.Direction.OUTBOUND,
+            status=Message.Status.SENT,
+        )
+        if ai_processing_run is not None:
+            mark_ai_processing_succeeded(
+                run=ai_processing_run,
+                output_message=message,
+            )
 
     send_whatsapp_message(conversation.contact.phone, result.text)
     return str(message.id)

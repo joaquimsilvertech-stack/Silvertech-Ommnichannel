@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Conversation, Message
+from .models import AIProcessingRun, Conversation, Message
 
 
 @admin.register(Conversation)
@@ -26,6 +26,53 @@ class MessageAdmin(admin.ModelAdmin):
     search_fields = ('body', 'conversation__contact__name')
     list_select_related = ('conversation', 'conversation__contact')
     readonly_fields = ('id', 'created_at', 'updated_at')
+
+
+@admin.register(AIProcessingRun)
+class AIProcessingRunAdmin(admin.ModelAdmin):
+    list_display = (
+        'workspace',
+        'conversation',
+        'source_message',
+        'status',
+        'attempt_count',
+        'created_at',
+    )
+    list_filter = ('status', 'workspace', 'created_at')
+    list_select_related = (
+        'workspace',
+        'conversation',
+        'source_message',
+        'provider_config',
+        'output_message',
+    )
+    readonly_fields = (
+        'id',
+        'workspace',
+        'conversation',
+        'source_message',
+        'provider_config',
+        'output_message',
+        'status',
+        'attempt_count',
+        'error_code',
+        'started_at',
+        'finished_at',
+        'created_at',
+        'updated_at',
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_view_permission(self, request, obj=None):
+        return True
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 ConversationAdmin.inlines = [MessageInline]

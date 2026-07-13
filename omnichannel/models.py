@@ -100,3 +100,68 @@ class Message(BaseModel):
 
     def __str__(self) -> str:
         return f'{self.direction} @ {self.conversation_id}'
+
+
+class AIProcessingRun(BaseModel):
+    """Controle idempotente de processamento de IA por mensagem inbound."""
+
+    class Status(models.TextChoices):
+        RUNNING = 'running', 'Em processamento'
+        SUCCEEDED = 'succeeded', 'Concluido'
+        FAILED = 'failed', 'Falhou'
+        SKIPPED = 'skipped', 'Ignorado'
+
+    workspace = models.ForeignKey(
+        'workspaces.Workspace',
+        on_delete=models.CASCADE,
+        related_name='ai_processing_runs',
+        db_index=True,
+    )
+    conversation = models.ForeignKey(
+        Conversation,
+        on_delete=models.CASCADE,
+        related_name='ai_processing_runs',
+        db_index=True,
+    )
+    source_message = models.OneToOneField(
+        Message,
+        on_delete=models.CASCADE,
+        related_name='ai_processing_run',
+    )
+    provider_config = models.ForeignKey(
+        'workspaces.WorkspaceAIProviderConfig',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='ai_processing_runs',
+    )
+    output_message = models.OneToOneField(
+        Message,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='ai_processing_output_run',
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.RUNNING,
+        db_index=True,
+    )
+    attempt_count = models.PositiveIntegerField(default=0)
+    error_code = models.CharField(max_length=64, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ('-created_at',)
+        verbose_name = 'execucao de IA'
+        verbose_name_plural = 'execucoes de IA'
+        indexes = [
+            models.Index(fields=['workspace', 'status']),
+            models.Index(fields=['conversation', 'status']),
+            models.Index(fields=['status', 'created_at']),
+        ]
+
+    def __str__(self) -> str:
+        return f'AIProcessingRun {self.status} @ {self.source_message_id}'
