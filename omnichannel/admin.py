@@ -15,17 +15,17 @@ class ConversationAdmin(admin.ModelAdmin):
 class MessageInline(admin.TabularInline):
     model = Message
     extra = 0
-    readonly_fields = ('id', 'created_at', 'updated_at')
-    fields = ('direction', 'status', 'body', 'created_at')
+    readonly_fields = ('id', 'send_error_code', 'created_at', 'updated_at')
+    fields = ('direction', 'status', 'send_error_code', 'body', 'created_at')
 
 
 @admin.register(Message)
 class MessageAdmin(admin.ModelAdmin):
-    list_display = ('conversation', 'direction', 'status', 'created_at')
+    list_display = ('conversation', 'direction', 'status', 'send_error_code', 'created_at')
     list_filter = ('direction', 'status', 'created_at')
     search_fields = ('body', 'conversation__contact__name')
     list_select_related = ('conversation', 'conversation__contact')
-    readonly_fields = ('id', 'created_at', 'updated_at')
+    readonly_fields = ('id', 'send_error_code', 'created_at', 'updated_at')
 
 
 @admin.register(AIProcessingRun)

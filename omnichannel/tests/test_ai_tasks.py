@@ -5,6 +5,7 @@ import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 from django.apps import apps
 
 from omnichannel.ai.exceptions import (
@@ -89,21 +90,54 @@ def test_process_ai_response_accepts_valid_source_message_id() -> None:
     )
     adapter = _adapter('Resposta com source message.')
 
+    def assert_pending_before_send(phone, text):
+        pending_message = Message.objects.get(
+            conversation=conversation,
+            direction=Message.Direction.OUTBOUND,
+        )
+        assert pending_message.status == Message.Status.PENDING
+        return {'key': {'id': 'evolution-source-message-id'}}
+
     with (
         patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter) as mock_registry,
-        patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+        patch('omnichannel.services.send_whatsapp_message', side_effect=assert_pending_before_send) as mock_send_whatsapp,
     ):
         message_id = process_ai_response.run(
             str(conversation.id),
             source_message_id=str(inbound.id),
         )
 
+    message = Message.objects.get(id=message_id)
+    assert message.status == Message.Status.SENT
+    assert message.external_id == 'evolution-source-message-id'
     assert message_id is not None
     run = AIProcessingRun.objects.get(source_message=inbound)
     assert run.status == AIProcessingRun.Status.SUCCEEDED
     assert str(run.output_message_id) == message_id
     mock_registry.assert_called_once()
     mock_send_whatsapp.assert_called_once_with('5511999999999', 'Resposta com source message.')
+
+
+@pytest.mark.django_db
+def test_process_ai_response_marks_sent_without_external_id_when_evolution_payload_has_no_id() -> None:
+    conversation = ConversationFactory(contact__phone='5511999999999')
+    WorkspaceAIProviderConfigFactory(workspace=conversation.workspace, api_key='sk-no-external-id-key')
+    inbound = MessageFactory(conversation=conversation, direction=Message.Direction.INBOUND)
+    adapter = _adapter('Resposta sem external id.')
+
+    with (
+        patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter),
+        patch('omnichannel.services.send_whatsapp_message', return_value={'ok': True}),
+    ):
+        message_id = process_ai_response.run(
+            str(conversation.id),
+            source_message_id=str(inbound.id),
+        )
+
+    message = Message.objects.get(id=message_id)
+    assert message.status == Message.Status.SENT
+    assert message.external_id is None
+    assert message.send_error_code == ''
 
 
 @pytest.mark.django_db
@@ -146,6 +180,94 @@ def test_process_ai_response_duplicate_source_message_does_not_create_second_res
     ).count() == 1
     assert AIProcessingRun.objects.filter(source_message=inbound).count() == 1
     first_send.assert_called_once()
+    second_registry.assert_not_called()
+    second_send.assert_not_called()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ('exception', 'expected_error_code'),
+    [
+        (requests.exceptions.Timeout('timeout'), 'EVOLUTION_TIMEOUT'),
+        (requests.exceptions.RequestException('request failed'), 'EVOLUTION_REQUEST_ERROR'),
+        (ValueError('invalid json'), 'EVOLUTION_INVALID_RESPONSE'),
+        (RuntimeError('unknown failure'), 'EVOLUTION_UNKNOWN_ERROR'),
+    ],
+)
+def test_process_ai_response_marks_message_failed_when_evolution_send_fails(
+    exception,
+    expected_error_code: str,
+    caplog,
+) -> None:
+    conversation = ConversationFactory(contact__phone='5511999999999')
+    secret = 'sk-evolution-failure-key'
+    WorkspaceAIProviderConfigFactory(workspace=conversation.workspace, api_key=secret)
+    inbound = MessageFactory(
+        conversation=conversation,
+        direction=Message.Direction.INBOUND,
+        body='Mensagem fonte sensivel.',
+    )
+    adapter = _adapter('Resposta que falhou no envio.')
+    caplog.set_level(logging.WARNING)
+
+    with (
+        patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter),
+        patch('omnichannel.services.send_whatsapp_message', side_effect=exception) as mock_send,
+    ):
+        message_id = process_ai_response.run(
+            str(conversation.id),
+            source_message_id=str(inbound.id),
+        )
+
+    message = Message.objects.get(id=message_id)
+    run = AIProcessingRun.objects.get(source_message=inbound)
+    assert message.status == Message.Status.FAILED
+    assert message.send_error_code == expected_error_code
+    assert run.status == AIProcessingRun.Status.SUCCEEDED
+    assert run.error_code == ''
+    assert run.output_message == message
+    assert Message.objects.filter(
+        conversation=conversation,
+        direction=Message.Direction.OUTBOUND,
+    ).count() == 1
+    mock_send.assert_called_once()
+    assert secret not in caplog.text
+    assert 'Mensagem fonte sensivel.' not in caplog.text
+    assert 'Resposta que falhou no envio.' not in caplog.text
+
+
+@pytest.mark.django_db
+def test_duplicate_task_after_evolution_failure_does_not_retry_generation_or_send() -> None:
+    conversation = ConversationFactory(contact__phone='5511999999999')
+    WorkspaceAIProviderConfigFactory(workspace=conversation.workspace, api_key='sk-failed-send-idempotent-key')
+    inbound = MessageFactory(conversation=conversation, direction=Message.Direction.INBOUND)
+    adapter = _adapter('Resposta unica mesmo com falha.')
+
+    with (
+        patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter),
+        patch('omnichannel.services.send_whatsapp_message', side_effect=requests.exceptions.Timeout('timeout')),
+    ):
+        first_result = process_ai_response.run(
+            str(conversation.id),
+            source_message_id=str(inbound.id),
+        )
+
+    with (
+        patch('omnichannel.ai.registry.get_provider_adapter') as second_registry,
+        patch('omnichannel.services.send_whatsapp_message') as second_send,
+    ):
+        second_result = process_ai_response.run(
+            str(conversation.id),
+            source_message_id=str(inbound.id),
+        )
+
+    assert first_result is not None
+    assert second_result is None
+    assert Message.objects.filter(
+        conversation=conversation,
+        direction=Message.Direction.OUTBOUND,
+    ).count() == 1
+    assert Message.objects.get(id=first_result).status == Message.Status.FAILED
     second_registry.assert_not_called()
     second_send.assert_not_called()
 
@@ -648,9 +770,12 @@ def test_process_ai_response_without_source_message_id_does_not_create_run() -> 
 
     with (
         patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter),
-        patch('omnichannel.services.send_whatsapp_message'),
+        patch('omnichannel.services.send_whatsapp_message', return_value={'id': 'no-source-id'}),
     ):
         message_id = process_ai_response.run(str(conversation.id))
 
     assert message_id is not None
+    message = Message.objects.get(id=message_id)
+    assert message.status == Message.Status.SENT
+    assert message.external_id == 'no-source-id'
     assert not AIProcessingRun.objects.exists()

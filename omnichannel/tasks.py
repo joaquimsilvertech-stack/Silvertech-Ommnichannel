@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from celery import shared_task
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +38,19 @@ def process_ai_response(
     from omnichannel.ai.registry import get_provider_adapter, is_provider_supported
     from omnichannel.models import Conversation, Message
     from omnichannel.services import (
+        EVOLUTION_INVALID_RESPONSE,
+        EVOLUTION_REQUEST_ERROR,
+        EVOLUTION_TIMEOUT,
+        EVOLUTION_UNKNOWN_ERROR,
         build_conversation_context_for_ai,
         claim_ai_processing_run,
+        create_pending_ai_message,
+        extract_evolution_message_external_id,
         is_message_processable_for_ai,
         mark_ai_processing_failed,
         mark_ai_processing_succeeded,
+        mark_message_as_failed,
+        mark_message_as_sent,
         send_whatsapp_message,
     )
     from workspaces.models import WorkspaceAIProviderConfig
@@ -217,11 +226,9 @@ def process_ai_response(
         return None
 
     with transaction.atomic():
-        message = Message.objects.create(
+        message = create_pending_ai_message(
             conversation=conversation,
             body=result.text,
-            direction=Message.Direction.OUTBOUND,
-            status=Message.Status.SENT,
         )
         if ai_processing_run is not None:
             mark_ai_processing_succeeded(
@@ -229,7 +236,47 @@ def process_ai_response(
                 output_message=message,
             )
 
-    send_whatsapp_message(conversation.contact.phone, result.text)
+    try:
+        evolution_response = send_whatsapp_message(conversation.contact.phone, result.text)
+        external_id = extract_evolution_message_external_id(evolution_response)
+    except requests.exceptions.Timeout as exc:
+        _log_message_send_failure(
+            conversation=conversation,
+            message=message,
+            error_code=EVOLUTION_TIMEOUT,
+            exc=exc,
+        )
+        mark_message_as_failed(message=message, error_code=EVOLUTION_TIMEOUT)
+        return str(message.id)
+    except requests.exceptions.RequestException as exc:
+        _log_message_send_failure(
+            conversation=conversation,
+            message=message,
+            error_code=EVOLUTION_REQUEST_ERROR,
+            exc=exc,
+        )
+        mark_message_as_failed(message=message, error_code=EVOLUTION_REQUEST_ERROR)
+        return str(message.id)
+    except ValueError as exc:
+        _log_message_send_failure(
+            conversation=conversation,
+            message=message,
+            error_code=EVOLUTION_INVALID_RESPONSE,
+            exc=exc,
+        )
+        mark_message_as_failed(message=message, error_code=EVOLUTION_INVALID_RESPONSE)
+        return str(message.id)
+    except Exception as exc:
+        _log_message_send_failure(
+            conversation=conversation,
+            message=message,
+            error_code=EVOLUTION_UNKNOWN_ERROR,
+            exc=exc,
+        )
+        mark_message_as_failed(message=message, error_code=EVOLUTION_UNKNOWN_ERROR)
+        return str(message.id)
+
+    mark_message_as_sent(message=message, external_id=external_id)
     return str(message.id)
 
 
@@ -265,6 +312,26 @@ def _log_ai_provider_skip(
             'conversation_id': str(conversation.id),
             'provider': provider_config.provider,
             'model_name': provider_config.model_name,
+            'exception_type': type(exc).__name__,
+        },
+    )
+
+
+def _log_message_send_failure(
+    *,
+    conversation,
+    message,
+    error_code: str,
+    exc: Exception,
+) -> None:
+    logger.warning(
+        'Falha ao enviar mensagem outbound pela Evolution API',
+        extra={
+            'workspace_id': str(conversation.workspace_id),
+            'conversation_id': str(conversation.id),
+            'message_id': str(message.id),
+            'status': 'failed',
+            'error_code': error_code,
             'exception_type': type(exc).__name__,
         },
     )

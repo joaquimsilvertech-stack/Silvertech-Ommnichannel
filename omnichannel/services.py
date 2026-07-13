@@ -43,6 +43,10 @@ AI_PROCESSING_ALREADY_SUCCEEDED = 'ALREADY_SUCCEEDED'
 AI_PROCESSING_ALREADY_RUNNING = 'ALREADY_RUNNING'
 AI_PROCESSING_ALREADY_FAILED = 'ALREADY_FAILED'
 AI_PROCESSING_ALREADY_SKIPPED = 'ALREADY_SKIPPED'
+EVOLUTION_TIMEOUT = 'EVOLUTION_TIMEOUT'
+EVOLUTION_REQUEST_ERROR = 'EVOLUTION_REQUEST_ERROR'
+EVOLUTION_INVALID_RESPONSE = 'EVOLUTION_INVALID_RESPONSE'
+EVOLUTION_UNKNOWN_ERROR = 'EVOLUTION_UNKNOWN_ERROR'
 
 
 def _normalize_whatsapp_jid(remote_jid: str) -> str:
@@ -304,6 +308,94 @@ def _sanitize_ai_processing_error_code(error_code: str) -> str:
         for char in str(error_code or 'UNKNOWN_ERROR').upper()
     )
     return sanitized[:64] or 'UNKNOWN_ERROR'
+
+
+def create_pending_ai_message(
+    *,
+    conversation: Conversation,
+    body: str,
+) -> Message:
+    """Cria a mensagem outbound da IA antes do envio externo."""
+    return Message.objects.create(
+        conversation=conversation,
+        body=body,
+        direction=Message.Direction.OUTBOUND,
+        status=Message.Status.PENDING,
+        external_id=None,
+        send_error_code='',
+    )
+
+
+def mark_message_as_sent(
+    *,
+    message: Message,
+    external_id: str | None = None,
+) -> Message:
+    with transaction.atomic():
+        locked_message = Message.objects.select_for_update().get(id=message.id)
+        locked_message.status = Message.Status.SENT
+        if external_id:
+            locked_message.external_id = external_id
+        locked_message.send_error_code = ''
+        locked_message.save(
+            update_fields=[
+                'status',
+                'external_id',
+                'send_error_code',
+                'updated_at',
+            ],
+        )
+        return locked_message
+
+
+def mark_message_as_failed(
+    *,
+    message: Message,
+    error_code: str,
+) -> Message:
+    with transaction.atomic():
+        locked_message = Message.objects.select_for_update().get(id=message.id)
+        locked_message.status = Message.Status.FAILED
+        locked_message.send_error_code = sanitize_message_send_error_code(error_code)
+        locked_message.save(
+            update_fields=[
+                'status',
+                'send_error_code',
+                'updated_at',
+            ],
+        )
+        return locked_message
+
+
+def extract_evolution_message_external_id(response_payload: dict[str, Any]) -> str | None:
+    if not isinstance(response_payload, dict):
+        return None
+
+    candidate_paths = (
+        ('key', 'id'),
+        ('data', 'key', 'id'),
+        ('message', 'key', 'id'),
+        ('id',),
+    )
+    for path in candidate_paths:
+        value: Any = response_payload
+        for key in path:
+            if not isinstance(value, dict):
+                value = None
+                break
+            value = value.get(key)
+        if value:
+            return str(value)
+
+    return None
+
+
+def sanitize_message_send_error_code(error_code: str) -> str:
+    sanitized = ''.join(
+        char if char.isalnum() or char == '_' else '_'
+        for char in str(error_code or EVOLUTION_UNKNOWN_ERROR).upper()
+    )
+    return sanitized[:64] or EVOLUTION_UNKNOWN_ERROR
 
 
 def build_conversation_context_for_ai(

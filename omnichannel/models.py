@@ -58,6 +58,7 @@ class Message(BaseModel):
         OUTBOUND = 'outbound', 'Saída'
 
     class Status(models.TextChoices):
+        PENDING = 'pending', 'Pendente'
         SENT = 'sent', 'Enviada'
         DELIVERED = 'delivered', 'Entregue'
         READ = 'read', 'Lida'
@@ -89,6 +90,7 @@ class Message(BaseModel):
         db_index=True,
         help_text='ID da mensagem no provedor (ex.: wamid da Meta).',
     )
+    send_error_code = models.CharField(max_length=64, blank=True)
 
     class Meta:
         ordering = ('-created_at',)

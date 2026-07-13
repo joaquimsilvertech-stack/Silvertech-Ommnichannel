@@ -115,6 +115,7 @@ def test_mark_ai_processing_succeeded_links_output_message() -> None:
     output_message = MessageFactory(
         conversation=source_message.conversation,
         direction=Message.Direction.OUTBOUND,
+        status=Message.Status.PENDING,
     )
 
     updated_run = mark_ai_processing_succeeded(
@@ -124,8 +125,38 @@ def test_mark_ai_processing_succeeded_links_output_message() -> None:
 
     assert updated_run.status == AIProcessingRun.Status.SUCCEEDED
     assert updated_run.output_message == output_message
+    assert updated_run.output_message.status == Message.Status.PENDING
     assert updated_run.error_code == ''
     assert updated_run.finished_at is not None
+
+
+@pytest.mark.django_db
+def test_succeeded_run_with_failed_output_message_still_blocks_regeneration() -> None:
+    source_message, provider_config = _source_with_provider()
+    output_message = MessageFactory(
+        conversation=source_message.conversation,
+        direction=Message.Direction.OUTBOUND,
+        status=Message.Status.FAILED,
+        send_error_code='EVOLUTION_TIMEOUT',
+    )
+    AIProcessingRun.objects.create(
+        workspace=source_message.conversation.workspace,
+        conversation=source_message.conversation,
+        source_message=source_message,
+        provider_config=provider_config,
+        output_message=output_message,
+        status=AIProcessingRun.Status.SUCCEEDED,
+        attempt_count=1,
+    )
+
+    run, reason_code = claim_ai_processing_run(
+        source_message=source_message,
+        provider_config=provider_config,
+    )
+
+    assert run is None
+    assert reason_code == AI_PROCESSING_ALREADY_SUCCEEDED
+    assert AIProcessingRun.objects.get(source_message=source_message).error_code == ''
 
 
 @pytest.mark.django_db

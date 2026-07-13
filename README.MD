@@ -252,7 +252,13 @@ A IA nao e agendada para mensagens `fromMe`, grupos nao suportados, mensagens va
 
 Cada mensagem inbound processada automaticamente com `source_message_id` pode ter no maximo um `AIProcessingRun`. A relacao unica com `source_message` impede duas respostas de IA para a mesma mensagem, inclusive em execucoes repetidas da task ou disputas concorrentes entre workers protegidas por `transaction.atomic`, `select_for_update` e constraint no banco.
 
-Chamadas retrocompativeis com `source_message_id=None` continuam funcionando sem idempotencia persistente. `AIProcessingRun` nao armazena credenciais, payload bruto do webhook, corpo completo da mensagem nem resposta bruta do provider. Retry/backoff avancado fica para a Parte 12, e o status correto de mensagens outbound (`PENDING`, `SENT`, `FAILED` e `external_id`) sera tratado na Parte 11.
+Chamadas retrocompativeis com `source_message_id=None` continuam funcionando sem idempotencia persistente. `AIProcessingRun` nao armazena credenciais, payload bruto do webhook, corpo completo da mensagem nem resposta bruta do provider. Retry/backoff avancado fica para a Parte 12.
+
+### Estados da mensagem outbound
+
+Respostas geradas pela IA criam uma `Message` outbound inicialmente como `PENDING`. Quando a Evolution API confirma o envio, a mensagem passa para `SENT` e o `external_id` e salvo quando o provider retorna um identificador. Se o envio falhar, a mesma mensagem passa para `FAILED` com `send_error_code` sanitizado.
+
+`AIProcessingRun.SUCCEEDED` indica que a IA gerou uma resposta e que uma `output_message` foi persistida. Erros de envio pelo WhatsApp pertencem a `Message`, nao ao `AIProcessingRun`, preservando a idempotencia por `source_message` e evitando uma segunda resposta automatica. Retry/backoff avancado continua reservado para a Parte 12. Nenhuma credencial, payload bruto da Evolution ou resposta bruta do provider e armazenada no run.
 
 Antes de deploy:
 
