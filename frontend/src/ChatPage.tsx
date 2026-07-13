@@ -56,7 +56,7 @@ export function ConversationsPage() {
     queryFn: getConversations
   });
 
-  const conversations = query.data ?? [];
+  const conversations = useMemo(() => query.data ?? [], [query.data]);
   const selectedConversation = conversations.find((conversation) => conversation.id === selectedId);
 
   const counts = useMemo(

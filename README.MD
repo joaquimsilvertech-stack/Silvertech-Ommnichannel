@@ -242,6 +242,16 @@ Ativacao e desativacao usam endpoints dedicados e tambem exigem owner/admin do w
 
 O endpoint de desativacao nao chama provider externo, nao remove configuracao, nao apaga `api_key`, `settings`, `system_prompt` ou `model_name`. O campo `is_active` nao deve ser enviado em `POST`, `PUT` ou `PATCH` genericos; use exclusivamente `/activate/` e `/deactivate/` para mudar esse estado.
 
+## Blocos frontend de IA
+
+O frontend Vite/React possui blocos reutilizaveis para gerenciar providers de IA por workspace na rota `/workspaces/:workspaceId/settings/ai`. A tela consome os endpoints `/api/workspaces/{workspace_id}/ai-providers/`, `/test/`, `/activate/` e `/deactivate/`, sempre usando o backend como fonte de verdade para permissao, provider suportado, ativacao e teste de conexao.
+
+`api_key` e tratada como write-only: o formulario usa campo de senha, envia a chave apenas em create/update/test quando o usuario preenche explicitamente e limpa o campo apos sucesso. O frontend usa `has_api_key` apenas para indicar se ha chave cadastrada, nunca renderiza a chave real e nao salva credenciais em `localStorage` ou `sessionStorage`.
+
+`is_active` nao e enviado em create/update/patch genericos. Ativacao e desativacao usam somente os endpoints dedicados; o teste de conexao nao ativa provider automaticamente. O frontend nao chama OpenAI, Evolution ou qualquer provider externo diretamente.
+
+Os componentes de status outbound exibem `PENDING`, `SENT`, `FAILED`, `DELIVERED`, `READ` e informacoes de retry (`send_attempt_count`, `send_error_code`, `last_send_attempt_at`, `next_send_retry_at`) apenas para leitura. Retry manual, dashboard avancado, metricas e graficos ficam fora desta parte.
+
 ## Ligacao Automatica Webhook -> IA
 
 Mensagens inbound validas recebidas pelo webhook da Evolution API podem agendar uma resposta automatica de IA. O agendamento acontece com `transaction.on_commit`, depois que a mensagem inbound foi persistida com sucesso; o webhook nao chama OpenAI, nao chama adapter de provider e nao envia resposta diretamente pela Evolution API.

@@ -1,7 +1,9 @@
+import type { ReactNode } from "react";
+
 type ResourceTableProps<T extends { id: string | number }> = {
   columns: Array<{
     header: string;
-    render: (item: T) => string | number | boolean | null | undefined;
+    render: (item: T) => ReactNode;
   }>;
   emptyText: string;
   items: T[];
@@ -33,7 +35,7 @@ export function ResourceTable<T extends { id: string | number }>({ columns, empt
             <tr className="border-t border-app-border hover:bg-app-hover" key={item.id}>
               {columns.map((column) => (
                 <td className="px-4 py-3 text-app-text" key={column.header}>
-                  {String(column.render(item) ?? "-")}
+                  {column.render(item) ?? "-"}
                 </td>
               ))}
             </tr>

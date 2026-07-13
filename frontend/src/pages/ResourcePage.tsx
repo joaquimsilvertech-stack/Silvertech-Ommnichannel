@@ -1,5 +1,6 @@
 import { Icon } from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import { ResourceTable } from "../components/ResourceTable";
 
 type ResourcePageProps<T extends { id: string | number }> = {
@@ -11,7 +12,7 @@ type ResourcePageProps<T extends { id: string | number }> = {
   queryFn: () => Promise<T[]>;
   columns: Array<{
     header: string;
-    render: (item: T) => string | number | boolean | null | undefined;
+    render: (item: T) => ReactNode;
   }>;
 };
 

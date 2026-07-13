@@ -10,8 +10,9 @@ import {
   UsersThree,
   WarningCircle
 } from "@phosphor-icons/react";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Link, Route, Routes } from "react-router-dom";
 import { Button } from "./components/Button";
+import { AIProviderSettingsPage } from "./components/ai/AIProviderSettingsPage";
 import { LoginPanel } from "./components/LoginPanel";
 import { MetricCard } from "./components/MetricCard";
 import { Sidebar } from "./components/Sidebar";
@@ -46,9 +47,9 @@ function DashboardPage({ isAuthenticated, onLoggedIn }: { isAuthenticated: boole
     ]
   });
 
-  const contacts = contactsQuery.data ?? [];
-  const conversations = conversationsQuery.data ?? [];
-  const workspaces = workspacesQuery.data ?? [];
+  const contacts = useMemo(() => contactsQuery.data ?? [], [contactsQuery.data]);
+  const conversations = useMemo(() => conversationsQuery.data ?? [], [conversationsQuery.data]);
+  const workspaces = useMemo(() => workspacesQuery.data ?? [], [workspacesQuery.data]);
   const activeConversations = useMemo(
     () => conversations.filter((conversation) => conversation.status !== "closed").length,
     [conversations]
@@ -188,9 +189,18 @@ function AppLayout() {
                 element={<ResourcePage<Workspace> title="Workspaces" description="Design aplicado à rota existente de workspaces." endpoint="/api/workspaces/workspaces/" icon={UsersThree} queryKey="workspaces" queryFn={getWorkspaces} columns={[
                   { header: "Nome", render: (item) => item.name },
                   { header: "Slug", render: (item) => item.slug },
-                  { header: "ID", render: (item) => item.id }
+                  { header: "ID", render: (item) => item.id },
+                  {
+                    header: "IA",
+                    render: (item) => (
+                      <Link className="text-app-secondary hover:text-white" to={`/workspaces/${item.id}/settings/ai`}>
+                        Configurar IA
+                      </Link>
+                    )
+                  }
                 ]} />}
               />
+              <Route path="/workspaces/:workspaceId/settings/ai" element={<AIProviderSettingsPage />} />
               <Route
                 path="/members"
                 element={<ResourcePage<Member> title="Membros" description="Design aplicado à rota existente de membros." endpoint="/api/workspaces/members/" icon={UsersThree} queryKey="members" queryFn={getMembers} columns={[
