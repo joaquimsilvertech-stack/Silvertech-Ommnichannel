@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Any
 
-from celery import shared_task
 import requests
+from celery import shared_task
+from django.db import transaction
+from django.utils import timezone
+
+from omnichannel.services import MAX_AI_PROVIDER_ATTEMPTS, MAX_OUTBOUND_DELIVERY_ATTEMPTS
 
 logger = logging.getLogger(__name__)
 
@@ -17,12 +22,14 @@ def process_whatsapp_webhook_task(payload: dict[str, Any], workspace_id: str) ->
     process_whatsapp_payload(payload, workspace_id)
 
 
-@shared_task(name='omnichannel.process_ai_response')
+@shared_task(bind=True, name='omnichannel.process_ai_response', max_retries=MAX_AI_PROVIDER_ATTEMPTS)
 def process_ai_response(
+    self,
     conversation_id: str,
     source_message_id: str | None = None,
+    ai_processing_run_id: str | None = None,
 ) -> str | None:
-    """Gera, persiste e entrega uma resposta automatica de IA."""
+    """Gera e persiste uma resposta automatica de IA; delivery fica em task separada."""
     from omnichannel.ai.exceptions import (
         AIProviderAuthenticationError,
         AIProviderError,
@@ -33,29 +40,29 @@ def process_ai_response(
         AIProviderUnavailableError,
         UnsupportedAIProviderError,
     )
-    from django.db import transaction
-
     from omnichannel.ai.registry import get_provider_adapter, is_provider_supported
     from omnichannel.models import Conversation, Message
     from omnichannel.services import (
-        EVOLUTION_INVALID_RESPONSE,
-        EVOLUTION_REQUEST_ERROR,
-        EVOLUTION_TIMEOUT,
-        EVOLUTION_UNKNOWN_ERROR,
+        AI_RETRY_BASE_SECONDS,
+        MAX_AI_PROVIDER_ATTEMPTS,
         build_conversation_context_for_ai,
+        calculate_exponential_backoff,
+        can_retry_ai_processing,
         claim_ai_processing_run,
         create_pending_ai_message,
-        extract_evolution_message_external_id,
+        get_retryable_ai_processing_run,
         is_message_processable_for_ai,
+        is_retryable_ai_provider_error,
+        map_ai_provider_exception_to_error_code,
+        mark_ai_processing_attempt_started,
         mark_ai_processing_failed,
+        mark_ai_processing_retrying,
         mark_ai_processing_succeeded,
-        mark_message_as_failed,
-        mark_message_as_sent,
-        send_whatsapp_message,
     )
     from workspaces.models import WorkspaceAIProviderConfig
 
     ai_processing_run = None
+    source_message = None
 
     try:
         conversation = Conversation.objects.select_related(
@@ -161,24 +168,41 @@ def process_ai_response(
         )
         return None
 
-    if source_message_id is not None:
-        ai_processing_run, claim_reason_code = claim_ai_processing_run(
-            source_message=source_message,
-            provider_config=provider_config,
-        )
-        if ai_processing_run is None:
-            _log_ai_task_skip(
-                'Task de IA ignorada: processamento idempotente existente',
-                conversation=conversation,
-                source_message_id=source_message_id,
-                reason_code=claim_reason_code or 'AI_PROCESSING_ALREADY_EXISTS',
+    if source_message is not None:
+        if ai_processing_run_id is not None:
+            ai_processing_run = get_retryable_ai_processing_run(
+                run_id=ai_processing_run_id,
+                source_message=source_message,
             )
-            return None
+            if ai_processing_run is None:
+                _log_ai_task_skip(
+                    'Task de IA ignorada: retry de run invalido',
+                    conversation=conversation,
+                    source_message_id=source_message_id,
+                    reason_code='AI_PROCESSING_RETRY_RUN_INVALID',
+                )
+                return None
+        else:
+            ai_processing_run, claim_reason_code = claim_ai_processing_run(
+                source_message=source_message,
+                provider_config=provider_config,
+            )
+            if ai_processing_run is None:
+                _log_ai_task_skip(
+                    'Task de IA ignorada: processamento idempotente existente',
+                    conversation=conversation,
+                    source_message_id=source_message_id,
+                    reason_code=claim_reason_code or 'AI_PROCESSING_ALREADY_EXISTS',
+                )
+                return None
 
     messages = build_conversation_context_for_ai(
         conversation,
         system_prompt=provider_config.system_prompt,
     )
+
+    if ai_processing_run is not None:
+        ai_processing_run = mark_ai_processing_attempt_started(run=ai_processing_run)
 
     try:
         adapter = get_provider_adapter(
@@ -200,7 +224,7 @@ def process_ai_response(
         if ai_processing_run is not None:
             mark_ai_processing_failed(
                 run=ai_processing_run,
-                error_code='UNSUPPORTED_PROVIDER',
+                error_code=map_ai_provider_exception_to_error_code(exc),
             )
         return None
     except (
@@ -218,10 +242,48 @@ def process_ai_response(
             provider_config=provider_config,
             exc=exc,
         )
+        if ai_processing_run is not None and is_retryable_ai_provider_error(exc):
+            if can_retry_ai_processing(
+                run=ai_processing_run,
+                max_attempts=MAX_AI_PROVIDER_ATTEMPTS,
+            ):
+                countdown = calculate_exponential_backoff(
+                    ai_processing_run.attempt_count,
+                    base_seconds=AI_RETRY_BASE_SECONDS,
+                )
+                next_retry_at = timezone.now() + timedelta(seconds=countdown)
+                mark_ai_processing_retrying(
+                    run=ai_processing_run,
+                    error_code=map_ai_provider_exception_to_error_code(exc),
+                    next_retry_at=next_retry_at,
+                )
+                logger.info(
+                    'Retry de provider de IA agendado',
+                    extra={
+                        'workspace_id': str(conversation.workspace_id),
+                        'conversation_id': str(conversation.id),
+                        'source_message_id': str(source_message_id or ''),
+                        'ai_processing_run_id': str(ai_processing_run.id),
+                        'error_code': map_ai_provider_exception_to_error_code(exc),
+                        'attempt_count': ai_processing_run.attempt_count,
+                        'retry_countdown': countdown,
+                        'exception_type': type(exc).__name__,
+                    },
+                )
+                raise self.retry(
+                    exc=exc,
+                    countdown=countdown,
+                    kwargs={
+                        'conversation_id': str(conversation.id),
+                        'source_message_id': str(source_message.id),
+                        'ai_processing_run_id': str(ai_processing_run.id),
+                    },
+                )
+
         if ai_processing_run is not None:
             mark_ai_processing_failed(
                 run=ai_processing_run,
-                error_code=type(exc).__name__,
+                error_code=map_ai_provider_exception_to_error_code(exc),
             )
         return None
 
@@ -235,45 +297,101 @@ def process_ai_response(
                 run=ai_processing_run,
                 output_message=message,
             )
+        transaction.on_commit(
+            lambda message_id=str(message.id): send_outbound_whatsapp_message.delay(message_id),
+        )
+
+    return str(message.id)
+
+
+@shared_task(
+    bind=True,
+    name='omnichannel.send_outbound_whatsapp_message',
+    max_retries=MAX_OUTBOUND_DELIVERY_ATTEMPTS,
+)
+def send_outbound_whatsapp_message(self, message_id: str) -> str | None:
+    """Entrega uma Message OUTBOUND existente pela Evolution com retry isolado."""
+    from omnichannel.models import Message
+    from omnichannel.services import (
+        OUTBOUND_RETRY_BASE_SECONDS,
+        calculate_exponential_backoff,
+        can_retry_message_delivery,
+        extract_evolution_message_external_id,
+        map_evolution_exception_to_error_code,
+        mark_message_as_failed,
+        mark_message_as_sent,
+        mark_message_delivery_attempt_started,
+        mark_message_delivery_retrying,
+        send_whatsapp_message,
+    )
 
     try:
-        evolution_response = send_whatsapp_message(conversation.contact.phone, result.text)
+        message = Message.objects.select_related(
+            'conversation',
+            'conversation__contact',
+            'conversation__workspace',
+        ).get(id=message_id)
+    except Message.DoesNotExist:
+        return None
+
+    if message.direction != Message.Direction.OUTBOUND:
+        return None
+
+    if message.status == Message.Status.SENT:
+        return str(message.id)
+
+    if message.status != Message.Status.PENDING:
+        return None
+
+    message = mark_message_delivery_attempt_started(message=message)
+
+    try:
+        evolution_response = send_whatsapp_message(
+            message.conversation.contact.phone,
+            message.body,
+        )
         external_id = extract_evolution_message_external_id(evolution_response)
-    except requests.exceptions.Timeout as exc:
-        _log_message_send_failure(
-            conversation=conversation,
-            message=message,
-            error_code=EVOLUTION_TIMEOUT,
-            exc=exc,
-        )
-        mark_message_as_failed(message=message, error_code=EVOLUTION_TIMEOUT)
-        return str(message.id)
-    except requests.exceptions.RequestException as exc:
-        _log_message_send_failure(
-            conversation=conversation,
-            message=message,
-            error_code=EVOLUTION_REQUEST_ERROR,
-            exc=exc,
-        )
-        mark_message_as_failed(message=message, error_code=EVOLUTION_REQUEST_ERROR)
-        return str(message.id)
-    except ValueError as exc:
-        _log_message_send_failure(
-            conversation=conversation,
-            message=message,
-            error_code=EVOLUTION_INVALID_RESPONSE,
-            exc=exc,
-        )
-        mark_message_as_failed(message=message, error_code=EVOLUTION_INVALID_RESPONSE)
-        return str(message.id)
     except Exception as exc:
-        _log_message_send_failure(
-            conversation=conversation,
-            message=message,
-            error_code=EVOLUTION_UNKNOWN_ERROR,
-            exc=exc,
+        error_code = map_evolution_exception_to_error_code(exc)
+        retryable = isinstance(
+            exc,
+            (
+                requests.exceptions.Timeout,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.RequestException,
+            ),
         )
-        mark_message_as_failed(message=message, error_code=EVOLUTION_UNKNOWN_ERROR)
+        if retryable and can_retry_message_delivery(message=message):
+            countdown = calculate_exponential_backoff(
+                message.send_attempt_count,
+                base_seconds=OUTBOUND_RETRY_BASE_SECONDS,
+            )
+            next_retry_at = timezone.now() + timedelta(seconds=countdown)
+            mark_message_delivery_retrying(
+                message=message,
+                error_code=error_code,
+                next_retry_at=next_retry_at,
+            )
+            _log_message_send_failure(
+                conversation=message.conversation,
+                message=message,
+                error_code=error_code,
+                exc=exc,
+                status='retrying',
+                retry_countdown=countdown,
+                attempt_count=message.send_attempt_count,
+            )
+            raise self.retry(exc=exc, countdown=countdown)
+
+        mark_message_as_failed(message=message, error_code=error_code)
+        _log_message_send_failure(
+            conversation=message.conversation,
+            message=message,
+            error_code=error_code,
+            exc=exc,
+            status='failed',
+            attempt_count=message.send_attempt_count,
+        )
         return str(message.id)
 
     mark_message_as_sent(message=message, external_id=external_id)
@@ -323,6 +441,9 @@ def _log_message_send_failure(
     message,
     error_code: str,
     exc: Exception,
+    status: str,
+    attempt_count: int | None = None,
+    retry_countdown: int | None = None,
 ) -> None:
     logger.warning(
         'Falha ao enviar mensagem outbound pela Evolution API',
@@ -330,8 +451,10 @@ def _log_message_send_failure(
             'workspace_id': str(conversation.workspace_id),
             'conversation_id': str(conversation.id),
             'message_id': str(message.id),
-            'status': 'failed',
+            'status': status,
             'error_code': error_code,
+            'attempt_count': attempt_count,
+            'retry_countdown': retry_countdown,
             'exception_type': type(exc).__name__,
         },
     )

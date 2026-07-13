@@ -252,13 +252,21 @@ A IA nao e agendada para mensagens `fromMe`, grupos nao suportados, mensagens va
 
 Cada mensagem inbound processada automaticamente com `source_message_id` pode ter no maximo um `AIProcessingRun`. A relacao unica com `source_message` impede duas respostas de IA para a mesma mensagem, inclusive em execucoes repetidas da task ou disputas concorrentes entre workers protegidas por `transaction.atomic`, `select_for_update` e constraint no banco.
 
-Chamadas retrocompativeis com `source_message_id=None` continuam funcionando sem idempotencia persistente. `AIProcessingRun` nao armazena credenciais, payload bruto do webhook, corpo completo da mensagem nem resposta bruta do provider. Retry/backoff avancado fica para a Parte 12.
+Chamadas retrocompativeis com `source_message_id=None` continuam funcionando sem idempotencia persistente. `AIProcessingRun` nao armazena credenciais, payload bruto do webhook, corpo completo da mensagem nem resposta bruta do provider.
 
 ### Estados da mensagem outbound
 
 Respostas geradas pela IA criam uma `Message` outbound inicialmente como `PENDING`. Quando a Evolution API confirma o envio, a mensagem passa para `SENT` e o `external_id` e salvo quando o provider retorna um identificador. Se o envio falhar, a mesma mensagem passa para `FAILED` com `send_error_code` sanitizado.
 
-`AIProcessingRun.SUCCEEDED` indica que a IA gerou uma resposta e que uma `output_message` foi persistida. Erros de envio pelo WhatsApp pertencem a `Message`, nao ao `AIProcessingRun`, preservando a idempotencia por `source_message` e evitando uma segunda resposta automatica. Retry/backoff avancado continua reservado para a Parte 12. Nenhuma credencial, payload bruto da Evolution ou resposta bruta do provider e armazenada no run.
+`AIProcessingRun.SUCCEEDED` indica que a IA gerou uma resposta e que uma `output_message` foi persistida. Erros de envio pelo WhatsApp pertencem a `Message`, nao ao `AIProcessingRun`, preservando a idempotencia por `source_message` e evitando uma segunda resposta automatica. Nenhuma credencial, payload bruto da Evolution ou resposta bruta do provider e armazenada no run.
+
+### Retry, backoff e tratamento de falhas
+
+Falhas transitorias do provider de IA (`rate limit`, timeout e indisponibilidade) sao retryadas com backoff deterministico antes de criar `output_message`. Enquanto aguarda nova tentativa, o `AIProcessingRun` fica como `RETRYING`, com `last_error_code`, `last_attempt_at` e `next_retry_at` preenchidos de forma sanitizada. Falhas permanentes do provider, como autenticacao, request invalido, provider sem suporte ou resposta invalida, marcam o `AIProcessingRun` como `FAILED` sem retry.
+
+Depois que a `output_message` existe, falhas da Evolution retryam apenas o envio da mesma `Message` outbound. O reenvio nao regenera IA e nao cria uma nova mensagem; a `Message` permanece `PENDING` enquanto aguarda retry, com `send_attempt_count`, `send_error_code`, `last_send_attempt_at` e `next_send_retry_at` atualizados. Apos o limite de tentativas, a `Message` vira `FAILED` com `send_error_code` sanitizado, enquanto `AIProcessingRun.SUCCEEDED` continua indicando que a resposta da IA foi gerada e persistida.
+
+Nenhuma credencial, payload bruto, header, resposta bruta da Evolution, prompt completo ou resposta completa da IA e armazenada ou logada nesse fluxo. Frontend, observabilidade avancada, retry manual e metricas de custo ficam para evolucoes futuras.
 
 Antes de deploy:
 

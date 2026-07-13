@@ -91,6 +91,9 @@ class Message(BaseModel):
         help_text='ID da mensagem no provedor (ex.: wamid da Meta).',
     )
     send_error_code = models.CharField(max_length=64, blank=True)
+    send_attempt_count = models.PositiveIntegerField(default=0)
+    last_send_attempt_at = models.DateTimeField(null=True, blank=True)
+    next_send_retry_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ('-created_at',)
@@ -109,6 +112,7 @@ class AIProcessingRun(BaseModel):
 
     class Status(models.TextChoices):
         RUNNING = 'running', 'Em processamento'
+        RETRYING = 'retrying', 'Aguardando retry'
         SUCCEEDED = 'succeeded', 'Concluido'
         FAILED = 'failed', 'Falhou'
         SKIPPED = 'skipped', 'Ignorado'
@@ -152,6 +156,9 @@ class AIProcessingRun(BaseModel):
     )
     attempt_count = models.PositiveIntegerField(default=0)
     error_code = models.CharField(max_length=64, blank=True)
+    last_error_code = models.CharField(max_length=64, blank=True)
+    next_retry_at = models.DateTimeField(null=True, blank=True)
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
 

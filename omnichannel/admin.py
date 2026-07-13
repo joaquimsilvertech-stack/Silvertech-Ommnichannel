@@ -15,17 +15,49 @@ class ConversationAdmin(admin.ModelAdmin):
 class MessageInline(admin.TabularInline):
     model = Message
     extra = 0
-    readonly_fields = ('id', 'send_error_code', 'created_at', 'updated_at')
-    fields = ('direction', 'status', 'send_error_code', 'body', 'created_at')
+    readonly_fields = (
+        'id',
+        'send_attempt_count',
+        'send_error_code',
+        'last_send_attempt_at',
+        'next_send_retry_at',
+        'created_at',
+        'updated_at',
+    )
+    fields = (
+        'direction',
+        'status',
+        'send_attempt_count',
+        'send_error_code',
+        'last_send_attempt_at',
+        'next_send_retry_at',
+        'body',
+        'created_at',
+    )
 
 
 @admin.register(Message)
 class MessageAdmin(admin.ModelAdmin):
-    list_display = ('conversation', 'direction', 'status', 'send_error_code', 'created_at')
+    list_display = (
+        'conversation',
+        'direction',
+        'status',
+        'send_attempt_count',
+        'send_error_code',
+        'created_at',
+    )
     list_filter = ('direction', 'status', 'created_at')
     search_fields = ('body', 'conversation__contact__name')
     list_select_related = ('conversation', 'conversation__contact')
-    readonly_fields = ('id', 'send_error_code', 'created_at', 'updated_at')
+    readonly_fields = (
+        'id',
+        'send_attempt_count',
+        'send_error_code',
+        'last_send_attempt_at',
+        'next_send_retry_at',
+        'created_at',
+        'updated_at',
+    )
 
 
 @admin.register(AIProcessingRun)
@@ -56,6 +88,9 @@ class AIProcessingRunAdmin(admin.ModelAdmin):
         'status',
         'attempt_count',
         'error_code',
+        'last_error_code',
+        'last_attempt_at',
+        'next_retry_at',
         'started_at',
         'finished_at',
         'created_at',

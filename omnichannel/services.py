@@ -4,6 +4,7 @@ Regras de negocio do omnichannel (handlers de provedores externos).
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import requests
@@ -12,6 +13,16 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
+from omnichannel.ai.exceptions import (
+    AIProviderAuthenticationError,
+    AIProviderError,
+    AIProviderInvalidRequestError,
+    AIProviderInvalidResponseError,
+    AIProviderRateLimitError,
+    AIProviderTimeoutError,
+    AIProviderUnavailableError,
+    UnsupportedAIProviderError,
+)
 from crm.models import Contact
 from omnichannel.ai.registry import is_provider_supported
 from workspaces.models import Workspace, WorkspaceAIProviderConfig
@@ -41,12 +52,83 @@ NON_PROCESSABLE_MESSAGE_TYPES = {
 }
 AI_PROCESSING_ALREADY_SUCCEEDED = 'ALREADY_SUCCEEDED'
 AI_PROCESSING_ALREADY_RUNNING = 'ALREADY_RUNNING'
+AI_PROCESSING_ALREADY_RETRYING = 'ALREADY_RETRYING'
 AI_PROCESSING_ALREADY_FAILED = 'ALREADY_FAILED'
 AI_PROCESSING_ALREADY_SKIPPED = 'ALREADY_SKIPPED'
+MAX_AI_PROVIDER_ATTEMPTS = 3
+MAX_OUTBOUND_DELIVERY_ATTEMPTS = 3
+AI_RETRY_BASE_SECONDS = 60
+OUTBOUND_RETRY_BASE_SECONDS = 60
 EVOLUTION_TIMEOUT = 'EVOLUTION_TIMEOUT'
+EVOLUTION_CONNECTION_ERROR = 'EVOLUTION_CONNECTION_ERROR'
 EVOLUTION_REQUEST_ERROR = 'EVOLUTION_REQUEST_ERROR'
 EVOLUTION_INVALID_RESPONSE = 'EVOLUTION_INVALID_RESPONSE'
 EVOLUTION_UNKNOWN_ERROR = 'EVOLUTION_UNKNOWN_ERROR'
+
+
+def calculate_exponential_backoff(
+    attempt_number: int,
+    *,
+    base_seconds: int = AI_RETRY_BASE_SECONDS,
+) -> int:
+    """Retorna backoff deterministico para facilitar testes e operacao."""
+    try:
+        safe_attempt = int(attempt_number)
+    except (TypeError, ValueError):
+        safe_attempt = 1
+    safe_attempt = max(safe_attempt, 1)
+
+    if safe_attempt == 1:
+        multiplier = 1
+    elif safe_attempt == 2:
+        multiplier = 5
+    else:
+        multiplier = 15
+
+    return max(int(base_seconds), 0) * multiplier
+
+
+def is_retryable_ai_provider_error(exc: Exception) -> bool:
+    return isinstance(
+        exc,
+        (
+            AIProviderRateLimitError,
+            AIProviderTimeoutError,
+            AIProviderUnavailableError,
+        ),
+    )
+
+
+def map_ai_provider_exception_to_error_code(exc: Exception) -> str:
+    if isinstance(exc, AIProviderRateLimitError):
+        return 'AI_PROVIDER_RATE_LIMIT'
+    if isinstance(exc, AIProviderTimeoutError):
+        return 'AI_PROVIDER_TIMEOUT'
+    if isinstance(exc, AIProviderUnavailableError):
+        return 'AI_PROVIDER_UNAVAILABLE'
+    if isinstance(exc, AIProviderAuthenticationError):
+        return 'AI_PROVIDER_AUTHENTICATION'
+    if isinstance(exc, AIProviderInvalidRequestError):
+        return 'AI_PROVIDER_INVALID_REQUEST'
+    if isinstance(exc, UnsupportedAIProviderError):
+        return 'UNSUPPORTED_PROVIDER'
+    if isinstance(exc, AIProviderInvalidResponseError):
+        return 'AI_PROVIDER_INVALID_RESPONSE'
+    if isinstance(exc, AIProviderError):
+        return 'AI_PROVIDER_ERROR'
+    return _sanitize_ai_processing_error_code(type(exc).__name__)
+
+
+def map_evolution_exception_to_error_code(exc: Exception) -> str:
+    if isinstance(exc, requests.exceptions.Timeout):
+        return EVOLUTION_TIMEOUT
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return EVOLUTION_CONNECTION_ERROR
+    if isinstance(exc, requests.exceptions.RequestException):
+        return EVOLUTION_REQUEST_ERROR
+    if isinstance(exc, ValueError):
+        return EVOLUTION_INVALID_RESPONSE
+    return EVOLUTION_UNKNOWN_ERROR
 
 
 def _normalize_whatsapp_jid(remote_jid: str) -> str:
@@ -170,7 +252,7 @@ def claim_ai_processing_run(
                 source_message=source_message,
                 provider_config=provider_config,
                 status=AIProcessingRun.Status.RUNNING,
-                attempt_count=1,
+                attempt_count=0,
                 started_at=now,
             )
             logger.info(
@@ -194,6 +276,7 @@ def claim_ai_processing_run(
             reason_code = {
                 AIProcessingRun.Status.SUCCEEDED: AI_PROCESSING_ALREADY_SUCCEEDED,
                 AIProcessingRun.Status.RUNNING: AI_PROCESSING_ALREADY_RUNNING,
+                AIProcessingRun.Status.RETRYING: AI_PROCESSING_ALREADY_RETRYING,
                 AIProcessingRun.Status.FAILED: AI_PROCESSING_ALREADY_FAILED,
                 AIProcessingRun.Status.SKIPPED: AI_PROCESSING_ALREADY_SKIPPED,
             }.get(run.status, AI_PROCESSING_ALREADY_RUNNING)
@@ -221,12 +304,16 @@ def mark_ai_processing_succeeded(
         locked_run.status = AIProcessingRun.Status.SUCCEEDED
         locked_run.output_message = output_message
         locked_run.error_code = ''
+        locked_run.last_error_code = ''
+        locked_run.next_retry_at = None
         locked_run.finished_at = timezone.now()
         locked_run.save(
             update_fields=[
                 'status',
                 'output_message',
                 'error_code',
+                'last_error_code',
+                'next_retry_at',
                 'finished_at',
                 'updated_at',
             ],
@@ -268,6 +355,103 @@ def mark_ai_processing_skipped(
     )
 
 
+def mark_ai_processing_attempt_started(
+    *,
+    run: AIProcessingRun,
+) -> AIProcessingRun:
+    """Registra uma tentativa real antes de chamar o provider de IA."""
+    with transaction.atomic():
+        locked_run = AIProcessingRun.objects.select_for_update().get(id=run.id)
+        locked_run.status = AIProcessingRun.Status.RUNNING
+        locked_run.attempt_count += 1
+        locked_run.last_attempt_at = timezone.now()
+        if locked_run.started_at is None:
+            locked_run.started_at = locked_run.last_attempt_at
+        locked_run.next_retry_at = None
+        locked_run.save(
+            update_fields=[
+                'status',
+                'attempt_count',
+                'last_attempt_at',
+                'started_at',
+                'next_retry_at',
+                'updated_at',
+            ],
+        )
+        return locked_run
+
+
+def mark_ai_processing_retrying(
+    *,
+    run: AIProcessingRun,
+    error_code: str,
+    next_retry_at,
+) -> AIProcessingRun:
+    sanitized_error_code = _sanitize_ai_processing_error_code(error_code)
+    with transaction.atomic():
+        locked_run = AIProcessingRun.objects.select_for_update().get(id=run.id)
+        locked_run.status = AIProcessingRun.Status.RETRYING
+        locked_run.last_error_code = sanitized_error_code
+        locked_run.next_retry_at = next_retry_at
+        locked_run.error_code = ''
+        locked_run.finished_at = None
+        locked_run.save(
+            update_fields=[
+                'status',
+                'last_error_code',
+                'next_retry_at',
+                'error_code',
+                'finished_at',
+                'updated_at',
+            ],
+        )
+        logger.info(
+            'AIProcessingRun aguardando retry',
+            extra={
+                'workspace_id': str(locked_run.workspace_id),
+                'conversation_id': str(locked_run.conversation_id),
+                'source_message_id': str(locked_run.source_message_id),
+                'ai_processing_run_id': str(locked_run.id),
+                'status': locked_run.status,
+                'error_code': locked_run.last_error_code,
+                'attempt_count': locked_run.attempt_count,
+            },
+        )
+        return locked_run
+
+
+def can_retry_ai_processing(
+    *,
+    run: AIProcessingRun,
+    max_attempts: int = MAX_AI_PROVIDER_ATTEMPTS,
+) -> bool:
+    return run.attempt_count < max_attempts
+
+
+def get_retryable_ai_processing_run(
+    *,
+    run_id: str,
+    source_message: Message,
+) -> AIProcessingRun | None:
+    try:
+        with transaction.atomic():
+            run = AIProcessingRun.objects.select_for_update().get(id=run_id)
+            if run.source_message_id != source_message.id:
+                return None
+            if run.conversation_id != source_message.conversation_id:
+                return None
+            if run.workspace_id != source_message.conversation.workspace_id:
+                return None
+            if run.status not in (
+                AIProcessingRun.Status.RUNNING,
+                AIProcessingRun.Status.RETRYING,
+            ):
+                return None
+            return run
+    except (AIProcessingRun.DoesNotExist, TypeError, ValueError, ValidationError):
+        return None
+
+
 def _mark_ai_processing_finished(
     *,
     run: AIProcessingRun,
@@ -279,11 +463,13 @@ def _mark_ai_processing_finished(
         locked_run = AIProcessingRun.objects.select_for_update().get(id=run.id)
         locked_run.status = status
         locked_run.error_code = sanitized_error_code
+        locked_run.next_retry_at = None
         locked_run.finished_at = timezone.now()
         locked_run.save(
             update_fields=[
                 'status',
                 'error_code',
+                'next_retry_at',
                 'finished_at',
                 'updated_at',
             ],
@@ -307,6 +493,7 @@ def _sanitize_ai_processing_error_code(error_code: str) -> str:
         char if char.isalnum() or char == '_' else '_'
         for char in str(error_code or 'UNKNOWN_ERROR').upper()
     )
+    sanitized = _redact_sensitive_error_code_fragments(sanitized)
     return sanitized[:64] or 'UNKNOWN_ERROR'
 
 
@@ -326,6 +513,56 @@ def create_pending_ai_message(
     )
 
 
+def mark_message_delivery_attempt_started(
+    *,
+    message: Message,
+) -> Message:
+    with transaction.atomic():
+        locked_message = Message.objects.select_for_update().get(id=message.id)
+        locked_message.send_attempt_count += 1
+        locked_message.last_send_attempt_at = timezone.now()
+        locked_message.next_send_retry_at = None
+        locked_message.save(
+            update_fields=[
+                'send_attempt_count',
+                'last_send_attempt_at',
+                'next_send_retry_at',
+                'updated_at',
+            ],
+        )
+        return locked_message
+
+
+def mark_message_delivery_retrying(
+    *,
+    message: Message,
+    error_code: str,
+    next_retry_at,
+) -> Message:
+    with transaction.atomic():
+        locked_message = Message.objects.select_for_update().get(id=message.id)
+        locked_message.status = Message.Status.PENDING
+        locked_message.send_error_code = sanitize_message_send_error_code(error_code)
+        locked_message.next_send_retry_at = next_retry_at
+        locked_message.save(
+            update_fields=[
+                'status',
+                'send_error_code',
+                'next_send_retry_at',
+                'updated_at',
+            ],
+        )
+        return locked_message
+
+
+def can_retry_message_delivery(
+    *,
+    message: Message,
+    max_attempts: int = MAX_OUTBOUND_DELIVERY_ATTEMPTS,
+) -> bool:
+    return message.send_attempt_count < max_attempts
+
+
 def mark_message_as_sent(
     *,
     message: Message,
@@ -337,11 +574,13 @@ def mark_message_as_sent(
         if external_id:
             locked_message.external_id = external_id
         locked_message.send_error_code = ''
+        locked_message.next_send_retry_at = None
         locked_message.save(
             update_fields=[
                 'status',
                 'external_id',
                 'send_error_code',
+                'next_send_retry_at',
                 'updated_at',
             ],
         )
@@ -357,10 +596,12 @@ def mark_message_as_failed(
         locked_message = Message.objects.select_for_update().get(id=message.id)
         locked_message.status = Message.Status.FAILED
         locked_message.send_error_code = sanitize_message_send_error_code(error_code)
+        locked_message.next_send_retry_at = None
         locked_message.save(
             update_fields=[
                 'status',
                 'send_error_code',
+                'next_send_retry_at',
                 'updated_at',
             ],
         )
@@ -395,7 +636,22 @@ def sanitize_message_send_error_code(error_code: str) -> str:
         char if char.isalnum() or char == '_' else '_'
         for char in str(error_code or EVOLUTION_UNKNOWN_ERROR).upper()
     )
+    sanitized = _redact_sensitive_error_code_fragments(sanitized)
     return sanitized[:64] or EVOLUTION_UNKNOWN_ERROR
+
+
+def _redact_sensitive_error_code_fragments(error_code: str) -> str:
+    redacted = re.sub(r'SK_[A-Z0-9_]*', 'REDACTED', error_code)
+    for fragment in (
+        'OPENAI_API_KEY',
+        'API_KEY',
+        'AUTHORIZATION',
+        'HEADER',
+        'RAW_PAYLOAD',
+        'PAYLOAD',
+    ):
+        redacted = redacted.replace(fragment, 'REDACTED')
+    return redacted
 
 
 def build_conversation_context_for_ai(

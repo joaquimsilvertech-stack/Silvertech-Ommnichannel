@@ -359,6 +359,8 @@ def test_duplicate_ai_task_for_webhook_source_message_creates_single_response(
     with (
         patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter) as mock_registry,
         patch('omnichannel.services.send_whatsapp_message') as mock_evolution,
+        patch('omnichannel.tasks.send_outbound_whatsapp_message.delay') as mock_delivery_delay,
+        patch('omnichannel.tasks.transaction.on_commit', side_effect=lambda callback: callback()),
     ):
         first_result = process_ai_response.run(**scheduled_kwargs)
         second_result = process_ai_response.run(**scheduled_kwargs)
@@ -370,4 +372,5 @@ def test_duplicate_ai_task_for_webhook_source_message_creates_single_response(
         direction=Message.Direction.OUTBOUND,
     ).count() == 1
     mock_registry.assert_called_once()
-    mock_evolution.assert_called_once()
+    mock_evolution.assert_not_called()
+    mock_delivery_delay.assert_called_once_with(str(first_result))

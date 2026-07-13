@@ -11,6 +11,7 @@ from omnichannel.factories import ConversationFactory, MessageFactory
 from omnichannel.models import AIProcessingRun, Message
 from omnichannel.services import (
     AI_PROCESSING_ALREADY_FAILED,
+    AI_PROCESSING_ALREADY_RETRYING,
     AI_PROCESSING_ALREADY_RUNNING,
     AI_PROCESSING_ALREADY_SKIPPED,
     AI_PROCESSING_ALREADY_SUCCEEDED,
@@ -44,7 +45,7 @@ def test_claim_ai_processing_run_creates_running_run() -> None:
     assert reason_code is None
     assert run is not None
     assert run.status == AIProcessingRun.Status.RUNNING
-    assert run.attempt_count == 1
+    assert run.attempt_count == 0
     assert run.started_at is not None
     assert run.workspace == source_message.conversation.workspace
     assert run.conversation == source_message.conversation
@@ -57,6 +58,7 @@ def test_claim_ai_processing_run_creates_running_run() -> None:
     ('status', 'expected_reason'),
     [
         (AIProcessingRun.Status.RUNNING, AI_PROCESSING_ALREADY_RUNNING),
+        (AIProcessingRun.Status.RETRYING, AI_PROCESSING_ALREADY_RETRYING),
         (AIProcessingRun.Status.SUCCEEDED, AI_PROCESSING_ALREADY_SUCCEEDED),
         (AIProcessingRun.Status.FAILED, AI_PROCESSING_ALREADY_FAILED),
         (AIProcessingRun.Status.SKIPPED, AI_PROCESSING_ALREADY_SKIPPED),
@@ -173,7 +175,7 @@ def test_mark_ai_processing_failed_sanitizes_error_code() -> None:
     )
 
     assert updated_run.status == AIProcessingRun.Status.FAILED
-    assert updated_run.error_code == 'PROVIDER_ERROR__SK_SECRET'
+    assert updated_run.error_code == 'PROVIDER_ERROR__REDACTED'
     assert updated_run.finished_at is not None
 
 

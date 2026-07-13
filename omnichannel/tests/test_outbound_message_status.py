@@ -107,8 +107,7 @@ def test_sanitize_message_send_error_code_removes_dangerous_characters_and_limit
 
     sanitized = sanitize_message_send_error_code(raw)
 
-    assert sanitized.startswith('ERROR__SK_SECRET_AUTHORIZATION_HEADER_')
-    assert len(sanitized) == 64
+    assert sanitized == 'ERROR__REDACTED'
     assert '\n' not in sanitized
     assert ':' not in sanitized
 

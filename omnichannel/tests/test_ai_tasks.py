@@ -5,13 +5,14 @@ import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
-import requests
+from celery.exceptions import Retry
 from django.apps import apps
 
 from omnichannel.ai.exceptions import (
     AIProviderAuthenticationError,
     AIProviderInvalidResponseError,
     AIProviderRateLimitError,
+    AIProviderTimeoutError,
 )
 from omnichannel.ai.types import AIProviderResult
 from omnichannel.factories import ConversationFactory, MessageFactory
@@ -32,8 +33,12 @@ def _adapter(result_text: str = 'Resposta gerada pela IA.'):
     return adapter
 
 
+def _run_on_commit_immediately(callback, using=None, robust=False):
+    callback()
+
+
 @pytest.mark.django_db
-def test_process_ai_response_creates_outbound_message_and_sends_whatsapp() -> None:
+def test_process_ai_response_creates_outbound_message_and_schedules_delivery() -> None:
     conversation = ConversationFactory(contact__phone='5511999999999')
     provider_config = WorkspaceAIProviderConfigFactory(
         workspace=conversation.workspace,
@@ -52,13 +57,15 @@ def test_process_ai_response_creates_outbound_message_and_sends_whatsapp() -> No
     with (
         patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter) as mock_registry,
         patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+        patch('omnichannel.tasks.send_outbound_whatsapp_message.delay') as mock_delivery_delay,
+        patch('omnichannel.tasks.transaction.on_commit', side_effect=_run_on_commit_immediately),
     ):
         message_id = process_ai_response.run(str(conversation.id))
 
     message = Message.objects.get(id=message_id)
     assert message.conversation == conversation
     assert message.direction == Message.Direction.OUTBOUND
-    assert message.status == Message.Status.SENT
+    assert message.status == Message.Status.PENDING
     assert message.body == 'Resposta gerada pela IA.'
     mock_registry.assert_called_once_with(
         provider=provider_config.provider,
@@ -72,7 +79,8 @@ def test_process_ai_response_creates_outbound_message_and_sends_whatsapp() -> No
         ],
         settings={'temperature': 0.2},
     )
-    mock_send_whatsapp.assert_called_once_with('5511999999999', 'Resposta gerada pela IA.')
+    mock_send_whatsapp.assert_not_called()
+    mock_delivery_delay.assert_called_once_with(str(message.id))
 
 
 @pytest.mark.django_db
@@ -90,17 +98,11 @@ def test_process_ai_response_accepts_valid_source_message_id() -> None:
     )
     adapter = _adapter('Resposta com source message.')
 
-    def assert_pending_before_send(phone, text):
-        pending_message = Message.objects.get(
-            conversation=conversation,
-            direction=Message.Direction.OUTBOUND,
-        )
-        assert pending_message.status == Message.Status.PENDING
-        return {'key': {'id': 'evolution-source-message-id'}}
-
     with (
         patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter) as mock_registry,
-        patch('omnichannel.services.send_whatsapp_message', side_effect=assert_pending_before_send) as mock_send_whatsapp,
+        patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+        patch('omnichannel.tasks.send_outbound_whatsapp_message.delay') as mock_delivery_delay,
+        patch('omnichannel.tasks.transaction.on_commit', side_effect=_run_on_commit_immediately),
     ):
         message_id = process_ai_response.run(
             str(conversation.id),
@@ -108,18 +110,19 @@ def test_process_ai_response_accepts_valid_source_message_id() -> None:
         )
 
     message = Message.objects.get(id=message_id)
-    assert message.status == Message.Status.SENT
-    assert message.external_id == 'evolution-source-message-id'
+    assert message.status == Message.Status.PENDING
+    assert message.external_id is None
     assert message_id is not None
     run = AIProcessingRun.objects.get(source_message=inbound)
     assert run.status == AIProcessingRun.Status.SUCCEEDED
     assert str(run.output_message_id) == message_id
     mock_registry.assert_called_once()
-    mock_send_whatsapp.assert_called_once_with('5511999999999', 'Resposta com source message.')
+    mock_send_whatsapp.assert_not_called()
+    mock_delivery_delay.assert_called_once_with(str(message.id))
 
 
 @pytest.mark.django_db
-def test_process_ai_response_marks_sent_without_external_id_when_evolution_payload_has_no_id() -> None:
+def test_process_ai_response_leaves_external_id_empty_until_delivery() -> None:
     conversation = ConversationFactory(contact__phone='5511999999999')
     WorkspaceAIProviderConfigFactory(workspace=conversation.workspace, api_key='sk-no-external-id-key')
     inbound = MessageFactory(conversation=conversation, direction=Message.Direction.INBOUND)
@@ -127,7 +130,8 @@ def test_process_ai_response_marks_sent_without_external_id_when_evolution_paylo
 
     with (
         patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter),
-        patch('omnichannel.services.send_whatsapp_message', return_value={'ok': True}),
+        patch('omnichannel.tasks.send_outbound_whatsapp_message.delay') as mock_delivery_delay,
+        patch('omnichannel.tasks.transaction.on_commit', side_effect=_run_on_commit_immediately),
     ):
         message_id = process_ai_response.run(
             str(conversation.id),
@@ -135,9 +139,10 @@ def test_process_ai_response_marks_sent_without_external_id_when_evolution_paylo
         )
 
     message = Message.objects.get(id=message_id)
-    assert message.status == Message.Status.SENT
+    assert message.status == Message.Status.PENDING
     assert message.external_id is None
     assert message.send_error_code == ''
+    mock_delivery_delay.assert_called_once_with(str(message.id))
 
 
 @pytest.mark.django_db
@@ -157,6 +162,8 @@ def test_process_ai_response_duplicate_source_message_does_not_create_second_res
     with (
         patch('omnichannel.ai.registry.get_provider_adapter', return_value=first_adapter),
         patch('omnichannel.services.send_whatsapp_message') as first_send,
+        patch('omnichannel.tasks.send_outbound_whatsapp_message.delay') as first_delivery_delay,
+        patch('omnichannel.tasks.transaction.on_commit', side_effect=_run_on_commit_immediately),
     ):
         first_message_id = process_ai_response.run(
             str(conversation.id),
@@ -179,24 +186,22 @@ def test_process_ai_response_duplicate_source_message_does_not_create_second_res
         direction=Message.Direction.OUTBOUND,
     ).count() == 1
     assert AIProcessingRun.objects.filter(source_message=inbound).count() == 1
-    first_send.assert_called_once()
+    first_send.assert_not_called()
+    first_delivery_delay.assert_called_once_with(str(first_message_id))
     second_registry.assert_not_called()
     second_send.assert_not_called()
 
 
 @pytest.mark.django_db
 @pytest.mark.parametrize(
-    ('exception', 'expected_error_code'),
+    'exception',
     [
-        (requests.exceptions.Timeout('timeout'), 'EVOLUTION_TIMEOUT'),
-        (requests.exceptions.RequestException('request failed'), 'EVOLUTION_REQUEST_ERROR'),
-        (ValueError('invalid json'), 'EVOLUTION_INVALID_RESPONSE'),
-        (RuntimeError('unknown failure'), 'EVOLUTION_UNKNOWN_ERROR'),
+        ValueError('invalid json'),
+        RuntimeError('unknown failure'),
     ],
 )
-def test_process_ai_response_marks_message_failed_when_evolution_send_fails(
+def test_process_ai_response_never_sends_evolution_directly(
     exception,
-    expected_error_code: str,
     caplog,
 ) -> None:
     conversation = ConversationFactory(contact__phone='5511999999999')
@@ -213,6 +218,8 @@ def test_process_ai_response_marks_message_failed_when_evolution_send_fails(
     with (
         patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter),
         patch('omnichannel.services.send_whatsapp_message', side_effect=exception) as mock_send,
+        patch('omnichannel.tasks.send_outbound_whatsapp_message.delay') as mock_delivery_delay,
+        patch('omnichannel.tasks.transaction.on_commit', side_effect=_run_on_commit_immediately),
     ):
         message_id = process_ai_response.run(
             str(conversation.id),
@@ -221,8 +228,8 @@ def test_process_ai_response_marks_message_failed_when_evolution_send_fails(
 
     message = Message.objects.get(id=message_id)
     run = AIProcessingRun.objects.get(source_message=inbound)
-    assert message.status == Message.Status.FAILED
-    assert message.send_error_code == expected_error_code
+    assert message.status == Message.Status.PENDING
+    assert message.send_error_code == ''
     assert run.status == AIProcessingRun.Status.SUCCEEDED
     assert run.error_code == ''
     assert run.output_message == message
@@ -230,14 +237,15 @@ def test_process_ai_response_marks_message_failed_when_evolution_send_fails(
         conversation=conversation,
         direction=Message.Direction.OUTBOUND,
     ).count() == 1
-    mock_send.assert_called_once()
+    mock_send.assert_not_called()
+    mock_delivery_delay.assert_called_once_with(str(message.id))
     assert secret not in caplog.text
     assert 'Mensagem fonte sensivel.' not in caplog.text
     assert 'Resposta que falhou no envio.' not in caplog.text
 
 
 @pytest.mark.django_db
-def test_duplicate_task_after_evolution_failure_does_not_retry_generation_or_send() -> None:
+def test_duplicate_task_after_delivery_enqueue_does_not_retry_generation_or_send() -> None:
     conversation = ConversationFactory(contact__phone='5511999999999')
     WorkspaceAIProviderConfigFactory(workspace=conversation.workspace, api_key='sk-failed-send-idempotent-key')
     inbound = MessageFactory(conversation=conversation, direction=Message.Direction.INBOUND)
@@ -245,7 +253,9 @@ def test_duplicate_task_after_evolution_failure_does_not_retry_generation_or_sen
 
     with (
         patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter),
-        patch('omnichannel.services.send_whatsapp_message', side_effect=requests.exceptions.Timeout('timeout')),
+        patch('omnichannel.services.send_whatsapp_message') as first_send,
+        patch('omnichannel.tasks.send_outbound_whatsapp_message.delay') as first_delivery_delay,
+        patch('omnichannel.tasks.transaction.on_commit', side_effect=_run_on_commit_immediately),
     ):
         first_result = process_ai_response.run(
             str(conversation.id),
@@ -267,7 +277,9 @@ def test_duplicate_task_after_evolution_failure_does_not_retry_generation_or_sen
         conversation=conversation,
         direction=Message.Direction.OUTBOUND,
     ).count() == 1
-    assert Message.objects.get(id=first_result).status == Message.Status.FAILED
+    assert Message.objects.get(id=first_result).status == Message.Status.PENDING
+    first_send.assert_not_called()
+    first_delivery_delay.assert_called_once_with(str(first_result))
     second_registry.assert_not_called()
     second_send.assert_not_called()
 
@@ -277,6 +289,7 @@ def test_duplicate_task_after_evolution_failure_does_not_retry_generation_or_sen
     'run_status',
     [
         AIProcessingRun.Status.RUNNING,
+        AIProcessingRun.Status.RETRYING,
         AIProcessingRun.Status.SUCCEEDED,
         AIProcessingRun.Status.FAILED,
         AIProcessingRun.Status.SKIPPED,
@@ -540,10 +553,14 @@ def test_process_ai_response_uses_only_current_workspace_provider_config() -> No
     with (
         patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter) as mock_registry,
         patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+        patch('omnichannel.tasks.send_outbound_whatsapp_message.delay') as mock_delivery_delay,
+        patch('omnichannel.tasks.transaction.on_commit', side_effect=_run_on_commit_immediately),
     ):
         message_id = process_ai_response.run(str(conversation.id))
 
     assert message_id is not None
+    message = Message.objects.get(id=message_id)
+    assert message.status == Message.Status.PENDING
     mock_registry.assert_called_once_with(
         provider=AIProvider.OPENAI,
         api_key='sk-current-workspace-key',
@@ -552,7 +569,8 @@ def test_process_ai_response_uses_only_current_workspace_provider_config() -> No
         'role': 'system',
         'content': 'Prompt correto',
     }
-    mock_send_whatsapp.assert_called_once_with('5511888888888', 'Resposta do workspace correto.')
+    mock_send_whatsapp.assert_not_called()
+    mock_delivery_delay.assert_called_once_with(str(message.id))
 
 
 @pytest.mark.django_db
@@ -575,14 +593,19 @@ def test_process_ai_response_ignores_workspace_ai_system_prompt() -> None:
     with (
         patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter),
         patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+        patch('omnichannel.tasks.send_outbound_whatsapp_message.delay') as mock_delivery_delay,
+        patch('omnichannel.tasks.transaction.on_commit', side_effect=_run_on_commit_immediately),
     ):
         message_id = process_ai_response.run(str(conversation.id))
 
     assert message_id is not None
+    message = Message.objects.get(id=message_id)
+    assert message.status == Message.Status.PENDING
     messages = adapter.generate_response.call_args.kwargs['messages']
     assert messages[0] == {'role': 'system', 'content': 'PROMPT_OFICIAL_PROVIDER'}
     assert 'PROMPT_LEGADO_WORKSPACE' not in str(messages)
-    mock_send_whatsapp.assert_called_once_with('5511666666666', 'Resposta com prompt oficial.')
+    mock_send_whatsapp.assert_not_called()
+    mock_delivery_delay.assert_called_once_with(str(message.id))
 
 
 @pytest.mark.django_db
@@ -638,10 +661,14 @@ def test_process_ai_response_ignores_divergent_legacy_provider_config() -> None:
     with (
         patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter) as mock_registry,
         patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+        patch('omnichannel.tasks.send_outbound_whatsapp_message.delay') as mock_delivery_delay,
+        patch('omnichannel.tasks.transaction.on_commit', side_effect=_run_on_commit_immediately),
     ):
         message_id = process_ai_response.run(str(conversation.id))
 
     assert message_id is not None
+    message = Message.objects.get(id=message_id)
+    assert message.status == Message.Status.PENDING
     mock_registry.assert_called_once_with(provider=AIProvider.OPENAI, api_key='sk-provider-key')
     assert adapter.generate_response.call_args.kwargs['model_name'] == 'gpt-4o-mini'
     messages = adapter.generate_response.call_args.kwargs['messages']
@@ -651,7 +678,8 @@ def test_process_ai_response_ignores_divergent_legacy_provider_config() -> None:
     }
     assert 'Prompt legado que nao deve ser usado' not in str(messages)
     assert 'PROMPT_LEGADO_WORKSPACE' not in str(messages)
-    mock_send_whatsapp.assert_called_once_with('5511777777777', 'Resposta via provider config.')
+    mock_send_whatsapp.assert_not_called()
+    mock_delivery_delay.assert_called_once_with(str(message.id))
 
 
 @pytest.mark.django_db
@@ -672,14 +700,19 @@ def test_process_ai_response_with_empty_provider_prompt_does_not_send_empty_syst
     with (
         patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter),
         patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+        patch('omnichannel.tasks.send_outbound_whatsapp_message.delay') as mock_delivery_delay,
+        patch('omnichannel.tasks.transaction.on_commit', side_effect=_run_on_commit_immediately),
     ):
         message_id = process_ai_response.run(str(conversation.id))
 
     assert message_id is not None
+    message = Message.objects.get(id=message_id)
+    assert message.status == Message.Status.PENDING
     assert adapter.generate_response.call_args.kwargs['messages'] == [
         {'role': 'user', 'content': 'Sem prompt de sistema.'},
     ]
-    mock_send_whatsapp.assert_called_once_with('5511555555555', 'Resposta sem system prompt.')
+    mock_send_whatsapp.assert_not_called()
+    mock_delivery_delay.assert_called_once_with(str(message.id))
 
 
 @pytest.mark.django_db
@@ -729,7 +762,7 @@ def test_process_ai_response_provider_error_marks_run_failed_without_outbound_or
         body='Mensagem com erro do provider.',
     )
     adapter = _adapter()
-    adapter.generate_response.side_effect = AIProviderRateLimitError('rate-limit raw detail')
+    adapter.generate_response.side_effect = AIProviderAuthenticationError('auth raw detail')
     caplog.set_level(logging.WARNING)
 
     with (
@@ -744,7 +777,7 @@ def test_process_ai_response_provider_error_marks_run_failed_without_outbound_or
     assert result is None
     run = AIProcessingRun.objects.get(source_message=inbound)
     assert run.status == AIProcessingRun.Status.FAILED
-    assert run.error_code == 'AIPROVIDERRATELIMITERROR'
+    assert run.error_code == 'AI_PROVIDER_AUTHENTICATION'
     assert not Message.objects.filter(
         conversation=conversation,
         direction=Message.Direction.OUTBOUND,
@@ -752,6 +785,144 @@ def test_process_ai_response_provider_error_marks_run_failed_without_outbound_or
     mock_send_whatsapp.assert_not_called()
     assert 'sk-source-provider-error-key' not in caplog.text
     assert 'Mensagem com erro do provider.' not in caplog.text
+
+
+@pytest.mark.django_db
+def test_process_ai_response_retryable_provider_error_marks_retrying_and_retries(caplog) -> None:
+    conversation = ConversationFactory()
+    WorkspaceAIProviderConfigFactory(
+        workspace=conversation.workspace,
+        api_key='sk-source-provider-retry-key',
+    )
+    inbound = MessageFactory(
+        conversation=conversation,
+        direction=Message.Direction.INBOUND,
+        body='Mensagem para retry.',
+    )
+    adapter = _adapter()
+    adapter.generate_response.side_effect = AIProviderTimeoutError('timeout detail')
+    caplog.set_level(logging.INFO)
+
+    with (
+        patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter),
+        patch.object(process_ai_response, 'retry', side_effect=Retry('retry')) as mock_retry,
+        patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+    ):
+        with pytest.raises(Retry):
+            process_ai_response.run(
+                str(conversation.id),
+                source_message_id=str(inbound.id),
+            )
+
+    run = AIProcessingRun.objects.get(source_message=inbound)
+    assert run.status == AIProcessingRun.Status.RETRYING
+    assert run.attempt_count == 1
+    assert run.last_error_code == 'AI_PROVIDER_TIMEOUT'
+    assert run.error_code == ''
+    assert run.next_retry_at is not None
+    assert run.output_message is None
+    mock_retry.assert_called_once()
+    assert mock_retry.call_args.kwargs['countdown'] == 60
+    assert mock_retry.call_args.kwargs['kwargs'] == {
+        'conversation_id': str(conversation.id),
+        'source_message_id': str(inbound.id),
+        'ai_processing_run_id': str(run.id),
+    }
+    mock_send_whatsapp.assert_not_called()
+    assert 'sk-source-provider-retry-key' not in caplog.text
+    assert 'Mensagem para retry.' not in caplog.text
+
+
+@pytest.mark.django_db
+def test_process_ai_response_retry_with_same_run_creates_single_output_message() -> None:
+    conversation = ConversationFactory()
+    provider_config = WorkspaceAIProviderConfigFactory(
+        workspace=conversation.workspace,
+        api_key='sk-retry-success-key',
+    )
+    inbound = MessageFactory(
+        conversation=conversation,
+        direction=Message.Direction.INBOUND,
+        body='Mensagem fonte do retry.',
+    )
+    run = AIProcessingRun.objects.create(
+        workspace=conversation.workspace,
+        conversation=conversation,
+        source_message=inbound,
+        provider_config=provider_config,
+        status=AIProcessingRun.Status.RETRYING,
+        attempt_count=1,
+        last_error_code='AI_PROVIDER_TIMEOUT',
+    )
+    adapter = _adapter('Resposta apos retry.')
+
+    with (
+        patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter),
+        patch('omnichannel.tasks.send_outbound_whatsapp_message.delay') as mock_delivery_delay,
+        patch('omnichannel.tasks.transaction.on_commit', side_effect=_run_on_commit_immediately),
+        patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+    ):
+        message_id = process_ai_response.run(
+            str(conversation.id),
+            source_message_id=str(inbound.id),
+            ai_processing_run_id=str(run.id),
+        )
+
+    run.refresh_from_db()
+    message = Message.objects.get(id=message_id)
+    assert run.status == AIProcessingRun.Status.SUCCEEDED
+    assert run.attempt_count == 2
+    assert run.output_message == message
+    assert run.last_error_code == ''
+    assert Message.objects.filter(
+        conversation=conversation,
+        direction=Message.Direction.OUTBOUND,
+    ).count() == 1
+    assert message.status == Message.Status.PENDING
+    mock_delivery_delay.assert_called_once_with(str(message.id))
+    mock_send_whatsapp.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_process_ai_response_retryable_provider_error_exhausted_marks_failed() -> None:
+    conversation = ConversationFactory()
+    provider_config = WorkspaceAIProviderConfigFactory(
+        workspace=conversation.workspace,
+        api_key='sk-retry-exhausted-key',
+    )
+    inbound = MessageFactory(conversation=conversation, direction=Message.Direction.INBOUND)
+    run = AIProcessingRun.objects.create(
+        workspace=conversation.workspace,
+        conversation=conversation,
+        source_message=inbound,
+        provider_config=provider_config,
+        status=AIProcessingRun.Status.RETRYING,
+        attempt_count=2,
+        last_error_code='AI_PROVIDER_RATE_LIMIT',
+    )
+    adapter = _adapter()
+    adapter.generate_response.side_effect = AIProviderRateLimitError('rate limit detail')
+
+    with (
+        patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter),
+        patch.object(process_ai_response, 'retry') as mock_retry,
+        patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+    ):
+        result = process_ai_response.run(
+            str(conversation.id),
+            source_message_id=str(inbound.id),
+            ai_processing_run_id=str(run.id),
+        )
+
+    run.refresh_from_db()
+    assert result is None
+    assert run.status == AIProcessingRun.Status.FAILED
+    assert run.attempt_count == 3
+    assert run.error_code == 'AI_PROVIDER_RATE_LIMIT'
+    assert run.finished_at is not None
+    assert not Message.objects.filter(conversation=conversation, direction=Message.Direction.OUTBOUND).exists()
+    mock_retry.assert_not_called()
+    mock_send_whatsapp.assert_not_called()
 
 
 @pytest.mark.django_db
@@ -770,12 +941,16 @@ def test_process_ai_response_without_source_message_id_does_not_create_run() -> 
 
     with (
         patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter),
-        patch('omnichannel.services.send_whatsapp_message', return_value={'id': 'no-source-id'}),
+        patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+        patch('omnichannel.tasks.send_outbound_whatsapp_message.delay') as mock_delivery_delay,
+        patch('omnichannel.tasks.transaction.on_commit', side_effect=_run_on_commit_immediately),
     ):
         message_id = process_ai_response.run(str(conversation.id))
 
     assert message_id is not None
     message = Message.objects.get(id=message_id)
-    assert message.status == Message.Status.SENT
-    assert message.external_id == 'no-source-id'
+    assert message.status == Message.Status.PENDING
+    assert message.external_id is None
     assert not AIProcessingRun.objects.exists()
+    mock_send_whatsapp.assert_not_called()
+    mock_delivery_delay.assert_called_once_with(str(message.id))
