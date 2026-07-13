@@ -20,11 +20,12 @@ export function AIProviderConnectionTestButton({ workspaceId, providerConfigId }
     setError(undefined);
     try {
       const result = await mutation.testConnection(providerConfigId, temporaryKey.trim() || undefined);
-      setTemporaryKey("");
       setMessage(result.message || "Conexao testada com sucesso.");
     } catch (requestError) {
       const normalized = normalizeApiError(requestError);
       setError(normalized.errorCode ? `${normalized.message} (${normalized.errorCode})` : normalized.message);
+    } finally {
+      setTemporaryKey("");
     }
   }
 
