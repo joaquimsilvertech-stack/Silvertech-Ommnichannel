@@ -295,7 +295,7 @@ def test_patch_without_api_key_preserves_existing_key() -> None:
 
 
 @pytest.mark.django_db
-def test_patch_with_new_api_key_replaces_existing_key() -> None:
+def test_patch_with_new_api_key_fails_and_preserves_existing_key() -> None:
     client, _, workspace = _admin_client()
     config = WorkspaceAIProviderConfigFactory(
         workspace=workspace,
@@ -309,9 +309,11 @@ def test_patch_with_new_api_key_replaces_existing_key() -> None:
         format='json',
     )
 
-    assert response.status_code == status.HTTP_200_OK
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
     config.refresh_from_db()
-    assert config.api_key == 'sk-new-api-key'
+    assert config.api_key == 'sk-original-api-key'
+    assert 'sk-new-api-key' not in _response_text(response)
+    assert 'api_key' not in _response_text(response)
 
 
 @pytest.mark.django_db
@@ -326,9 +328,9 @@ def test_patch_never_returns_api_key() -> None:
         format='json',
     )
 
-    assert response.status_code == status.HTTP_200_OK
-    assert 'api_key' not in response.json()
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
     assert secret not in _response_text(response)
+    assert 'api_key' not in _response_text(response)
 
 
 @pytest.mark.django_db

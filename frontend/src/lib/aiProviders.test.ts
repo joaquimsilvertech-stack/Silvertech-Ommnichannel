@@ -5,6 +5,8 @@ import {
   createAIProvider,
   deactivateAIProvider,
   getAIProviders,
+  replaceAIProviderCredentials,
+  revokeAIProviderCredentials,
   testAIProviderConnection,
   updateAIProvider
 } from "./aiProviders";
@@ -45,12 +47,12 @@ describe("aiProviders API client", () => {
     });
   });
 
-  it("updateAIProvider omite api_key vazia", async () => {
+  it("updateAIProvider nao envia api_key pelo endpoint generico", async () => {
     const spy = vi.spyOn(api, "patch").mockResolvedValueOnce({ data: { id: "provider-1" } });
 
     await updateAIProvider("workspace-1", "provider-1", {
       model_name: "gpt-4o-mini",
-      api_key: " "
+      api_key: "sk-should-use-replace-endpoint"
     });
 
     expect(spy).toHaveBeenCalledWith("/api/workspaces/workspace-1/ai-providers/provider-1/", {
@@ -80,6 +82,35 @@ describe("aiProviders API client", () => {
     expect(spy).toHaveBeenNthCalledWith(2, "/api/workspaces/workspace-1/ai-providers/provider-1/deactivate/", {});
   });
 
+  it("replace e revoke usam endpoints dedicados de credenciais", async () => {
+    const spy = vi.spyOn(api, "post").mockResolvedValue({ data: { id: "provider-1" } });
+
+    await replaceAIProviderCredentials("workspace-1", "provider-1", { api_key: " sk-new-key " });
+    await revokeAIProviderCredentials("workspace-1", "provider-1");
+
+    expect(spy).toHaveBeenNthCalledWith(
+      1,
+      "/api/workspaces/workspace-1/ai-providers/provider-1/credentials/replace/",
+      { api_key: "sk-new-key" }
+    );
+    expect(spy).toHaveBeenNthCalledWith(
+      2,
+      "/api/workspaces/workspace-1/ai-providers/provider-1/credentials/revoke/",
+      {}
+    );
+  });
+
+  it("replaceAIProviderCredentials omite chave vazia para backend retornar MISSING_API_KEY", async () => {
+    const spy = vi.spyOn(api, "post").mockResolvedValueOnce({ data: { id: "provider-1" } });
+
+    await replaceAIProviderCredentials("workspace-1", "provider-1", { api_key: " " });
+
+    expect(spy).toHaveBeenCalledWith(
+      "/api/workspaces/workspace-1/ai-providers/provider-1/credentials/replace/",
+      {}
+    );
+  });
+
   it("normalizeApiError remove dados sensiveis da mensagem", () => {
     const error = normalizeApiError({
       response: {
@@ -92,7 +123,7 @@ describe("aiProviders API client", () => {
       isAxiosError: true
     });
 
-    expect(error.message).toBe("Cadastre uma chave antes de ativar.");
+    expect(error.message).toBe("Informe uma chave antes de continuar.");
     expect(error.errorCode).toBe("MISSING_API_KEY");
   });
 });

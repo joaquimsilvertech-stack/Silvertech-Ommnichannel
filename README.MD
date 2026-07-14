@@ -215,7 +215,7 @@ No `OpenAIAdapter`, `max_tokens` e `max_completion_tokens` sao mutuamente exclus
 
 ## AI Provider Self-Service Serializer
 
-`WorkspaceAIProviderConfigSerializer` prepara a futura API self-service de configuracao de provedores de IA sem expor credenciais. O campo `api_key` e aceito apenas como `write_only`; respostas publicas usam somente `has_api_key` para indicar se existe credencial cadastrada.
+`WorkspaceAIProviderConfigSerializer` prepara a futura API self-service de configuracao de provedores de IA sem expor credenciais. O campo `api_key` e aceito apenas como `write_only` em criacao e fluxos dedicados de credencial; respostas publicas usam somente `has_api_key` para indicar se existe credencial cadastrada.
 
 O workspace da configuracao vem exclusivamente do contexto do serializer, nunca do payload enviado pelo cliente. Somente providers com adapter registrado no registry podem ser criados ou ativados pelo self-service. Neste momento, apenas OpenAI possui adapter funcional; Anthropic e Google continuam modelados, mas nao suportados no runtime.
 
@@ -233,10 +233,18 @@ Administradores do workspace podem gerenciar configuracoes de providers de IA pe
 - `POST /api/workspaces/{workspace_id}/ai-providers/{id}/test/`
 - `POST /api/workspaces/{workspace_id}/ai-providers/{id}/activate/`
 - `POST /api/workspaces/{workspace_id}/ai-providers/{id}/deactivate/`
+- `POST /api/workspaces/{workspace_id}/ai-providers/{id}/credentials/replace/`
+- `POST /api/workspaces/{workspace_id}/ai-providers/{id}/credentials/revoke/`
 
-O `workspace_id` vem da URL e e repassado ao serializer pelo contexto; payloads com workspace sao rejeitados. `api_key` permanece apenas `write_only`, e respostas usam `has_api_key` para indicar credencial cadastrada. Apenas OpenAI esta funcional no runtime atual; Anthropic e Google continuam sem adapter e nao podem ser criados ou ativados pelo self-service.
+O `workspace_id` vem da URL e e repassado ao serializer pelo contexto; payloads com workspace sao rejeitados. `api_key` permanece apenas `write_only`, respostas usam `has_api_key` para indicar credencial cadastrada, e `PATCH`/`PUT` genericos rejeitam troca de chave. Apenas OpenAI esta funcional no runtime atual; Anthropic e Google continuam sem adapter e nao podem ser criados ou ativados pelo self-service.
 
 O endpoint de teste de conexao tambem exige owner/admin do workspace. Ele pode usar a credencial salva ou uma `api_key` temporaria enviada no body; essa chave temporaria nao e salva, nao ativa automaticamente o provider e nunca aparece em resposta ou log. O teste faz uma chamada externa minima ao provider em runtime, com resposta sanitizada; os testes automatizados usam mocks.
+
+### Gerenciamento de credenciais de IA
+
+O endpoint `/credentials/replace/` recebe somente `api_key` write-only, valida o provider suportado e testa a nova chave com override temporario antes de salvar. Se o teste falhar, a credencial antiga permanece intacta e a resposta retorna apenas codigo e mensagem sanitizados. A substituicao nao altera `is_active`, `model_name`, `system_prompt` ou `settings`.
+
+O endpoint `/credentials/revoke/` e idempotente, nao chama o provider externo e nao remove a configuracao. Ele apaga a credencial criptografada local (`api_key=""`) e desativa o provider (`is_active=false`), preservando provider, modelo, prompt e settings. Desativar pausa o uso do provider mantendo a chave; revogar remove a chave salva e tambem desativa o provider.
 
 Ativacao e desativacao usam endpoints dedicados e tambem exigem owner/admin do workspace; agentes comuns nao podem executar essas acoes. O endpoint de ativacao valida a conexao usando somente a credencial salva antes de alterar o estado. Se o teste falhar, o provider permanece inativo e a resposta retorna apenas erro sanitizado, sem credenciais ou payload bruto do provider. Ao ativar um provider, os demais providers do mesmo workspace sao desativados atomicamente dentro de transacao PostgreSQL; providers de outros workspaces nao sao afetados.
 
@@ -244,9 +252,9 @@ O endpoint de desativacao nao chama provider externo, nao remove configuracao, n
 
 ## Blocos frontend de IA
 
-O frontend Vite/React possui blocos reutilizaveis para gerenciar providers de IA por workspace na rota `/workspaces/:workspaceId/settings/ai`. A tela consome os endpoints `/api/workspaces/{workspace_id}/ai-providers/`, `/test/`, `/activate/` e `/deactivate/`, sempre usando o backend como fonte de verdade para permissao, provider suportado, ativacao e teste de conexao.
+O frontend Vite/React possui blocos reutilizaveis para gerenciar providers de IA por workspace na rota `/workspaces/:workspaceId/settings/ai`. A tela consome os endpoints `/api/workspaces/{workspace_id}/ai-providers/`, `/test/`, `/activate/`, `/deactivate/`, `/credentials/replace/` e `/credentials/revoke/`, sempre usando o backend como fonte de verdade para permissao, provider suportado, ativacao, credenciais e teste de conexao.
 
-`api_key` e tratada como write-only: o formulario usa campo de senha, envia a chave apenas em create/update/test quando o usuario preenche explicitamente e limpa o campo apos sucesso. O frontend usa `has_api_key` apenas para indicar se ha chave cadastrada, nunca renderiza a chave real e nao salva credenciais em `localStorage` ou `sessionStorage`.
+`api_key` e tratada como write-only: o formulario de criacao usa campo de senha, o teste de conexao aceita uma chave temporaria e a substituicao usa o endpoint dedicado `/credentials/replace/`. Campos de chave sao limpos em sucesso e erro. O frontend usa `has_api_key` apenas para indicar se ha chave cadastrada, nunca renderiza a chave real e nao salva credenciais em `localStorage` ou `sessionStorage`.
 
 `is_active` nao e enviado em create/update/patch genericos. Ativacao e desativacao usam somente os endpoints dedicados; o teste de conexao nao ativa provider automaticamente. O frontend nao chama OpenAI, Evolution ou qualquer provider externo diretamente.
 

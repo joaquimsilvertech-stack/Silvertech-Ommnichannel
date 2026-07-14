@@ -77,7 +77,7 @@ export function AIProviderForm({ mode, provider, onSubmit, onCancel, isSubmittin
       settings
     };
     if (mode === "create") payload.provider = providerName;
-    if (apiKey.trim()) payload.api_key = apiKey.trim();
+    if (mode === "create" && apiKey.trim()) payload.api_key = apiKey.trim();
 
     try {
       await onSubmit(payload);
@@ -148,7 +148,9 @@ export function AIProviderForm({ mode, provider, onSubmit, onCancel, isSubmittin
       <div className="mt-4 grid gap-4">
         <SystemPromptEditor onChange={setSystemPrompt} value={systemPrompt} />
         <AIProviderSettingsEditor error={settingsError} onChange={setSettingsText} value={settingsText} />
-        <APIKeyField hasApiKey={hasApiKey} onChange={setApiKey} required={mode === "create" && !hasApiKey} value={apiKey} />
+        {mode === "create" ? (
+          <APIKeyField hasApiKey={hasApiKey} onChange={setApiKey} required={!hasApiKey} value={apiKey} />
+        ) : null}
       </div>
 
       {formError ? (

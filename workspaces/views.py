@@ -23,17 +23,31 @@ from .permissions import IsWorkspaceAdminMember
 from .serializers import (
     MemberSerializer,
     WorkspaceAIProviderConnectionTestSerializer,
+    WorkspaceAIProviderCredentialReplaceSerializer,
+    WorkspaceAIProviderCredentialRevokeSerializer,
     WorkspaceAIProviderConfigSerializer,
     WorkspaceInviteSerializer,
     WorkspaceSerializer,
 )
 from .services import (
     AIProviderActivationError,
+    AIProviderCredentialError,
     activate_ai_provider_config,
     deactivate_ai_provider_config,
+    replace_ai_provider_credentials,
+    revoke_ai_provider_credentials,
 )
 
 logger = logging.getLogger(__name__)
+AI_PROVIDER_CREDENTIAL_ERROR_STATUS = {
+    'UNSUPPORTED_PROVIDER': 400,
+    'MISSING_API_KEY': 400,
+    'INVALID_CREDENTIALS': 400,
+    'RATE_LIMITED': 429,
+    'PROVIDER_TIMEOUT': 504,
+    'PROVIDER_UNAVAILABLE': 503,
+    'PROVIDER_ERROR': 502,
+}
 
 
 def send_invite_email(invite: WorkspaceInvite) -> None:
@@ -255,6 +269,51 @@ class WorkspaceAIProviderConfigViewSet(
 
         return Response(self._activation_payload(provider_config, is_active=False))
 
+    def replace_credentials(self, request, *args, **kwargs):
+        provider_config = self.get_object()
+        workspace = self.get_workspace()
+        input_serializer = WorkspaceAIProviderCredentialReplaceSerializer(data=request.data)
+        if not input_serializer.is_valid():
+            return Response(
+                self._replace_validation_error_payload(provider_config, request.data),
+                status=400,
+            )
+
+        try:
+            provider_config = replace_ai_provider_credentials(
+                workspace=workspace,
+                provider_config=provider_config,
+                api_key=input_serializer.validated_data['api_key'],
+            )
+        except AIProviderCredentialError as exc:
+            return Response(
+                self._credential_error_payload(provider_config, exc),
+                status=self._credential_error_status(exc),
+            )
+
+        serializer = self.get_serializer(provider_config)
+        return Response(serializer.data)
+
+    def revoke_credentials(self, request, *args, **kwargs):
+        provider_config = self.get_object()
+        workspace = self.get_workspace()
+        input_serializer = WorkspaceAIProviderCredentialRevokeSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+
+        try:
+            provider_config = revoke_ai_provider_credentials(
+                workspace=workspace,
+                provider_config=provider_config,
+            )
+        except AIProviderCredentialError as exc:
+            return Response(
+                self._credential_error_payload(provider_config, exc),
+                status=self._credential_error_status(exc),
+            )
+
+        serializer = self.get_serializer(provider_config)
+        return Response(serializer.data)
+
     def _activation_payload(
         self,
         provider_config: WorkspaceAIProviderConfig,
@@ -272,4 +331,50 @@ class WorkspaceAIProviderConfigViewSet(
                 if is_active
                 else 'Provider desativado com sucesso.'
             ),
+        }
+
+    def _credential_error_status(self, exc: AIProviderCredentialError) -> int:
+        error_code = self._credential_error_code(exc)
+        return AI_PROVIDER_CREDENTIAL_ERROR_STATUS[error_code]
+
+    def _credential_error_code(self, exc: AIProviderCredentialError) -> str:
+        error_code = getattr(exc, 'error_code', None)
+        if error_code in AI_PROVIDER_CREDENTIAL_ERROR_STATUS:
+            return error_code
+        return 'PROVIDER_ERROR'
+
+    def _credential_error_payload(
+        self,
+        provider_config: WorkspaceAIProviderConfig,
+        exc: AIProviderCredentialError,
+    ) -> dict:
+        return {
+            'success': False,
+            'provider': provider_config.provider,
+            'model_name': provider_config.model_name,
+            'message': str(exc),
+            'error_code': self._credential_error_code(exc),
+        }
+
+    def _replace_validation_error_payload(
+        self,
+        provider_config: WorkspaceAIProviderConfig,
+        payload: dict,
+    ) -> dict:
+        raw_api_key = payload.get('api_key') if isinstance(payload, dict) else None
+        if not isinstance(raw_api_key, str) or not raw_api_key.strip():
+            return {
+                'success': False,
+                'provider': provider_config.provider,
+                'model_name': provider_config.model_name,
+                'message': 'Informe uma chave antes de continuar.',
+                'error_code': 'MISSING_API_KEY',
+            }
+
+        return {
+            'success': False,
+            'provider': provider_config.provider,
+            'model_name': provider_config.model_name,
+            'message': 'Credencial invalida. Verifique a chave informada.',
+            'error_code': 'INVALID_CREDENTIALS',
         }

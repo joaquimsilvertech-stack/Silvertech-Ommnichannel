@@ -167,7 +167,7 @@ def test_update_without_api_key_preserves_existing_key() -> None:
 
 
 @pytest.mark.django_db
-def test_update_with_new_api_key_replaces_existing_key() -> None:
+def test_update_with_new_api_key_fails_and_preserves_existing_key() -> None:
     config = WorkspaceAIProviderConfigFactory(api_key='sk-original-key', is_active=False)
     serializer = WorkspaceAIProviderConfigSerializer(
         config,
@@ -176,11 +176,12 @@ def test_update_with_new_api_key_replaces_existing_key() -> None:
         partial=True,
     )
 
-    assert serializer.is_valid(), serializer.errors
-    serializer.save()
+    assert not serializer.is_valid()
     config.refresh_from_db()
 
-    assert config.api_key == 'sk-replacement-key'
+    assert config.api_key == 'sk-original-key'
+    assert 'sk-replacement-key' not in str(serializer.errors)
+    assert 'api_key' not in str(serializer.errors)
 
 
 @pytest.mark.django_db

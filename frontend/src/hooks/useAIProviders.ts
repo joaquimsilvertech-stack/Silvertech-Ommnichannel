@@ -6,6 +6,8 @@ import {
   deactivateAIProvider,
   getAIProvider,
   getAIProviders,
+  replaceAIProviderCredentials,
+  revokeAIProviderCredentials,
   testAIProviderConnection,
   updateAIProvider,
   type AIProviderConfigInput
@@ -95,6 +97,43 @@ export function useDeactivateAIProvider(workspaceId: string | number | undefined
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (providerConfigId: string) => deactivateAIProvider(workspaceId!, providerConfigId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: aiProvidersQueryKey(workspaceId) });
+    }
+  });
+}
+
+export function useReplaceAIProviderCredentials(workspaceId: string | number | undefined) {
+  const queryClient = useQueryClient();
+  const apiKeyRef = useRef<string | undefined>(undefined);
+  const mutation = useMutation({
+    mutationFn: (providerConfigId: string) =>
+      replaceAIProviderCredentials(
+        workspaceId!,
+        providerConfigId,
+        { api_key: apiKeyRef.current ?? "" }
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: aiProvidersQueryKey(workspaceId) });
+    },
+    onSettled: () => {
+      apiKeyRef.current = undefined;
+    }
+  });
+
+  return {
+    ...mutation,
+    replaceCredentials: (providerConfigId: string, apiKey: string) => {
+      apiKeyRef.current = apiKey.trim();
+      return mutation.mutateAsync(providerConfigId);
+    }
+  };
+}
+
+export function useRevokeAIProviderCredentials(workspaceId: string | number | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (providerConfigId: string) => revokeAIProviderCredentials(workspaceId!, providerConfigId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: aiProvidersQueryKey(workspaceId) });
     }

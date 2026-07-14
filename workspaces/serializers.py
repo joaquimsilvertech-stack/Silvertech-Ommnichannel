@@ -227,6 +227,11 @@ class WorkspaceAIProviderConfigSerializer(serializers.ModelSerializer):
             self._validate_instance_workspace(workspace)
             self._validate_immutable_provider(provider)
 
+        if self.instance is not None and 'api_key' in attrs:
+            raise serializers.ValidationError(
+                'Use o endpoint de substituicao de credencial para alterar a chave.',
+            )
+
         if 'api_key' in attrs:
             attrs['api_key'] = self._validate_api_key_value(attrs['api_key'])
 
@@ -341,3 +346,21 @@ class WorkspaceAIProviderConnectionTestSerializer(serializers.Serializer):
         if 'api_key' in attrs:
             attrs['api_key'] = validate_provider_api_key_value(attrs['api_key'])
         return attrs
+
+
+class WorkspaceAIProviderCredentialReplaceSerializer(serializers.Serializer):
+    api_key = serializers.CharField(
+        write_only=True,
+        required=True,
+        allow_blank=False,
+        trim_whitespace=False,
+        min_length=8,
+        style={'input_type': 'password'},
+    )
+
+    def validate_api_key(self, value: str) -> str:
+        return validate_provider_api_key_value(value)
+
+
+class WorkspaceAIProviderCredentialRevokeSerializer(serializers.Serializer):
+    pass

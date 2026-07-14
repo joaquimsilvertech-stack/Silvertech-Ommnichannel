@@ -71,10 +71,10 @@ describe("AIProviderForm", () => {
     expect(screen.getByText(/json valido/i)).toBeInTheDocument();
   });
 
-  it("exibe has_api_key sem renderizar chave real", () => {
+  it("nao renderiza campo de chave no modo edicao", () => {
     render(<AIProviderForm mode="edit" onSubmit={vi.fn()} provider={provider} />);
 
-    expect(screen.getByText(/chave cadastrada/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText("API key")).not.toBeInTheDocument();
     expect(screen.queryByText(/sk-/i)).not.toBeInTheDocument();
   });
 });

@@ -8,12 +8,14 @@ export type NormalizedApiError = {
 };
 
 const ERROR_MESSAGES: Record<string, string> = {
-  INVALID_CREDENTIALS: "Credencial invalida. Verifique a chave cadastrada.",
+  INVALID_CREDENTIALS: "Credencial invalida. Verifique a chave informada.",
   RATE_LIMITED: "Provider limitou as requisicoes. Tente novamente em instantes.",
-  PROVIDER_TIMEOUT: "O provider demorou para responder.",
+  PROVIDER_TIMEOUT: "O provider demorou para responder. Tente novamente.",
   AI_PROVIDER_TIMEOUT: "O provider demorou para responder.",
+  PROVIDER_UNAVAILABLE: "O provider esta indisponivel no momento.",
+  PROVIDER_ERROR: "Nao foi possivel validar a credencial agora.",
   UNSUPPORTED_PROVIDER: "Este provider ainda nao esta disponivel no runtime.",
-  MISSING_API_KEY: "Cadastre uma chave antes de ativar."
+  MISSING_API_KEY: "Informe uma chave antes de continuar."
 };
 
 function sanitizeText(value: unknown): string {

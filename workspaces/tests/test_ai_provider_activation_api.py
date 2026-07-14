@@ -396,14 +396,17 @@ def test_generic_endpoints_reject_is_active(method: str) -> None:
 @pytest.mark.django_db
 def test_generic_patch_without_is_active_still_updates_allowed_fields() -> None:
     client, _, workspace = _admin_client()
-    config = WorkspaceAIProviderConfigFactory(workspace=workspace, is_active=False)
+    config = WorkspaceAIProviderConfigFactory(
+        workspace=workspace,
+        api_key='sk-original-generic-key',
+        is_active=False,
+    )
 
     response = client.patch(
         _detail_url(workspace, config),
         {
             'model_name': 'gpt-4.1-mini',
             'settings': {'temperature': 0.2},
-            'api_key': 'sk-updated-generic-key',
         },
         format='json',
     )
@@ -412,7 +415,7 @@ def test_generic_patch_without_is_active_still_updates_allowed_fields() -> None:
     config.refresh_from_db()
     assert config.model_name == 'gpt-4.1-mini'
     assert config.settings == {'temperature': 0.2}
-    assert config.api_key == 'sk-updated-generic-key'
+    assert config.api_key == 'sk-original-generic-key'
     assert config.is_active is False
 
 

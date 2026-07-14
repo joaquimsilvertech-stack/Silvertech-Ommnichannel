@@ -24,6 +24,10 @@ export type AIProviderConfigInput = {
   api_key?: string;
 };
 
+export type AIProviderCredentialsInput = {
+  api_key: string;
+};
+
 export type AIProviderConnectionTestResult = {
   success: boolean;
   provider: AIProviderName;
@@ -47,15 +51,16 @@ function providerBaseUrl(workspaceId: string | number) {
   return `/api/workspaces/${workspaceId}/ai-providers/`;
 }
 
-function sanitizeProviderPayload(input: AIProviderConfigInput): AIProviderConfigInput {
+function sanitizeProviderPayload(input: AIProviderConfigInput, options: { includeApiKey?: boolean } = {}): AIProviderConfigInput {
   const { provider, model_name, system_prompt, settings, api_key } = input;
+  const includeApiKey = options.includeApiKey ?? true;
   const payload: AIProviderConfigInput = {};
 
   if (provider) payload.provider = provider;
   if (model_name !== undefined) payload.model_name = model_name;
   if (system_prompt !== undefined) payload.system_prompt = system_prompt;
   if (settings !== undefined) payload.settings = settings;
-  if (api_key && api_key.trim()) payload.api_key = api_key.trim();
+  if (includeApiKey && api_key && api_key.trim()) payload.api_key = api_key.trim();
 
   return payload;
 }
@@ -93,7 +98,7 @@ export async function updateAIProvider(
   input: AIProviderConfigInput
 ) {
   return wrapProviderRequest<WorkspaceAIProviderConfig>(
-    api.patch(`${providerBaseUrl(workspaceId)}${providerConfigId}/`, sanitizeProviderPayload(input))
+    api.patch(`${providerBaseUrl(workspaceId)}${providerConfigId}/`, sanitizeProviderPayload(input, { includeApiKey: false }))
   );
 }
 
@@ -117,5 +122,22 @@ export async function activateAIProvider(workspaceId: string | number, providerC
 export async function deactivateAIProvider(workspaceId: string | number, providerConfigId: string) {
   return wrapProviderRequest<WorkspaceAIProviderConfig>(
     api.post(`${providerBaseUrl(workspaceId)}${providerConfigId}/deactivate/`, {})
+  );
+}
+
+export async function replaceAIProviderCredentials(
+  workspaceId: string | number,
+  providerConfigId: string,
+  input: AIProviderCredentialsInput
+) {
+  const payload = input.api_key.trim() ? { api_key: input.api_key.trim() } : {};
+  return wrapProviderRequest<WorkspaceAIProviderConfig>(
+    api.post(`${providerBaseUrl(workspaceId)}${providerConfigId}/credentials/replace/`, payload)
+  );
+}
+
+export async function revokeAIProviderCredentials(workspaceId: string | number, providerConfigId: string) {
+  return wrapProviderRequest<WorkspaceAIProviderConfig>(
+    api.post(`${providerBaseUrl(workspaceId)}${providerConfigId}/credentials/revoke/`, {})
   );
 }

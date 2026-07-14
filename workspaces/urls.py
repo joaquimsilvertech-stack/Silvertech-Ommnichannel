@@ -62,5 +62,23 @@ urlpatterns = [
         ),
         name='workspace-ai-provider-deactivate',
     ),
+    path(
+        '<uuid:workspace_id>/ai-providers/<uuid:pk>/credentials/replace/',
+        WorkspaceAIProviderConfigViewSet.as_view(
+            {
+                'post': 'replace_credentials',
+            },
+        ),
+        name='workspace-ai-provider-credentials-replace',
+    ),
+    path(
+        '<uuid:workspace_id>/ai-providers/<uuid:pk>/credentials/revoke/',
+        WorkspaceAIProviderConfigViewSet.as_view(
+            {
+                'post': 'revoke_credentials',
+            },
+        ),
+        name='workspace-ai-provider-credentials-revoke',
+    ),
     path('', include(router.urls)),
 ]

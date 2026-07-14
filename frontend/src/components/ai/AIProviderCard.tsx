@@ -6,6 +6,7 @@ import { useUpdateAIProvider } from "../../hooks/useAIProviders";
 import type { AIProviderConfigInput, WorkspaceAIProviderConfig } from "../../lib/aiProviders";
 import { AIProviderActivationActions } from "./AIProviderActivationActions";
 import { AIProviderConnectionTestButton } from "./AIProviderConnectionTestButton";
+import { AIProviderCredentialActions } from "./AIProviderCredentialActions";
 import { AIProviderForm } from "./AIProviderForm";
 import { AIProviderStatusBadge } from "./AIProviderStatusBadge";
 
@@ -83,6 +84,7 @@ export function AIProviderCard({ workspaceId, provider }: Props) {
           />
         ) : null}
         <AIProviderConnectionTestButton providerConfigId={provider.id} workspaceId={workspaceId} />
+        <AIProviderCredentialActions provider={provider} workspaceId={workspaceId} />
         <AIProviderActivationActions provider={provider} workspaceId={workspaceId} />
       </div>
     </article>
