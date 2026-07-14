@@ -2,9 +2,11 @@ import logging
 
 import requests
 from django.http import HttpResponse
+from django.shortcuts import get_object_or_404
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.filters import SearchFilter
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
@@ -15,6 +17,15 @@ from crm.mixins import WorkspaceScopedQuerysetMixin
 from crm.pagination import CRMCursorPagination
 
 from .models import Conversation, Message
+from .observability import (
+    DEFAULT_RECENT_EVENTS_LIMIT,
+    MAX_RECENT_EVENTS_LIMIT,
+    PERIOD_DELTAS,
+    get_ai_observability_recent_events,
+    get_ai_observability_summary,
+    get_ai_observability_timeseries,
+)
+from .observability_serializers import AIObservabilityEventSerializer
 from .serializers import (
     ConversationSerializer,
     MessageCreateSerializer,
@@ -22,6 +33,7 @@ from .serializers import (
 )
 from .services import send_whatsapp_message
 from .tasks import process_whatsapp_webhook_task
+from workspaces.permissions import IsWorkspaceAdminMember
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +80,70 @@ class WebhookAPIView(APIView):
                 )
 
         return Response({'status': 'received'}, status=status.HTTP_200_OK)
+
+
+class WorkspaceAIObservabilityBaseView(APIView):
+    permission_classes = [IsAuthenticated, IsWorkspaceAdminMember]
+
+    def get_workspace(self, request: Request):
+        from workspaces.models import Member, Workspace
+
+        workspace_id = self.kwargs.get('workspace_id')
+        if request.user.is_superuser:
+            return get_object_or_404(Workspace, id=workspace_id)
+
+        return get_object_or_404(
+            Workspace,
+            id=workspace_id,
+            memberships__user=request.user,
+            memberships__role__in={Member.Role.OWNER, Member.Role.ADMIN},
+        )
+
+    def get_filters(self, request: Request) -> dict[str, str]:
+        period = request.query_params.get('period', '24h')
+        if period not in PERIOD_DELTAS:
+            raise ValidationError({'period': 'Periodo invalido. Use 24h, 7d ou 30d.'})
+
+        return {
+            'period': period,
+            'provider': request.query_params.get('provider', ''),
+            'event_type': request.query_params.get('event_type', ''),
+            'status': request.query_params.get('status', ''),
+            'error_code': request.query_params.get('error_code', ''),
+        }
+
+
+class AIObservabilitySummaryView(WorkspaceAIObservabilityBaseView):
+    def get(self, request: Request, workspace_id: str) -> Response:
+        workspace = self.get_workspace(request)
+        filters = self.get_filters(request)
+        return Response(get_ai_observability_summary(workspace=workspace, **filters))
+
+
+class AIObservabilityTimeseriesView(WorkspaceAIObservabilityBaseView):
+    def get(self, request: Request, workspace_id: str) -> Response:
+        workspace = self.get_workspace(request)
+        filters = self.get_filters(request)
+        return Response(get_ai_observability_timeseries(workspace=workspace, **filters))
+
+
+class AIObservabilityEventsView(WorkspaceAIObservabilityBaseView):
+    def get(self, request: Request, workspace_id: str) -> Response:
+        workspace = self.get_workspace(request)
+        filters = self.get_filters(request)
+        raw_limit = request.query_params.get('limit', DEFAULT_RECENT_EVENTS_LIMIT)
+        try:
+            limit = min(max(int(raw_limit), 1), MAX_RECENT_EVENTS_LIMIT)
+        except (TypeError, ValueError):
+            raise ValidationError({'limit': 'Limit invalido.'}) from None
+
+        queryset = get_ai_observability_recent_events(
+            workspace=workspace,
+            limit=limit,
+            **filters,
+        )
+        serializer = AIObservabilityEventSerializer(queryset, many=True)
+        return Response({'results': serializer.data})
 
 
 class ConversationViewSet(WorkspaceScopedQuerysetMixin, viewsets.ModelViewSet):

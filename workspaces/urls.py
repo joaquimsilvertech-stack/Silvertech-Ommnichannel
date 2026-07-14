@@ -1,6 +1,12 @@
 from django.urls import include, path
 from rest_framework.routers import SimpleRouter
 
+from omnichannel.views import (
+    AIObservabilityEventsView,
+    AIObservabilitySummaryView,
+    AIObservabilityTimeseriesView,
+)
+
 from .views import (
     MemberViewSet,
     WorkspaceAIProviderConfigViewSet,
@@ -14,6 +20,21 @@ router.register('members', MemberViewSet, basename='member')
 router.register('invites', WorkspaceInviteViewSet, basename='workspace-invite')
 
 urlpatterns = [
+    path(
+        '<uuid:workspace_id>/ai-observability/summary/',
+        AIObservabilitySummaryView.as_view(),
+        name='workspace-ai-observability-summary',
+    ),
+    path(
+        '<uuid:workspace_id>/ai-observability/timeseries/',
+        AIObservabilityTimeseriesView.as_view(),
+        name='workspace-ai-observability-timeseries',
+    ),
+    path(
+        '<uuid:workspace_id>/ai-observability/events/',
+        AIObservabilityEventsView.as_view(),
+        name='workspace-ai-observability-events',
+    ),
     path(
         '<uuid:workspace_id>/ai-providers/',
         WorkspaceAIProviderConfigViewSet.as_view(

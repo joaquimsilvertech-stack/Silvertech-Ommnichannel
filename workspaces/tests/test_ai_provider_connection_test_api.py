@@ -10,7 +10,7 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken
 
 from omnichannel.ai.connection_test import AIProviderConnectionTestResult
-from omnichannel.models import Message
+from omnichannel.models import AIObservabilityEvent, Message
 from workspaces.factories import (
     MemberFactory,
     UserFactory,
@@ -303,3 +303,41 @@ def test_connection_test_endpoint_has_specific_throttle_scope() -> None:
         settings.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']['ai_provider_test_connection']
         == '5/minute'
     )
+
+
+@pytest.mark.django_db
+def test_connection_test_success_creates_observability_event() -> None:
+    client, _, workspace = _admin_client()
+    config = WorkspaceAIProviderConfigFactory(workspace=workspace, is_active=False)
+
+    with patch('workspaces.views.test_ai_provider_connection', return_value=_success_result(config)):
+        response = client.post(_test_url(workspace, config), {}, format='json')
+
+    assert response.status_code == status.HTTP_200_OK
+    event = AIObservabilityEvent.objects.get(
+        workspace=workspace,
+        event_type=AIObservabilityEvent.EventType.PROVIDER_TEST_SUCCESS,
+    )
+    assert event.status == AIObservabilityEvent.Status.SUCCESS
+    assert event.metadata['action'] == 'test_connection'
+
+
+@pytest.mark.django_db
+def test_connection_test_failure_creates_observability_event() -> None:
+    client, _, workspace = _admin_client()
+    config = WorkspaceAIProviderConfigFactory(workspace=workspace, is_active=False)
+
+    with patch(
+        'workspaces.views.test_ai_provider_connection',
+        return_value=_error_result(config, 'INVALID_CREDENTIALS'),
+    ):
+        response = client.post(_test_url(workspace, config), {}, format='json')
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    event = AIObservabilityEvent.objects.get(
+        workspace=workspace,
+        event_type=AIObservabilityEvent.EventType.PROVIDER_TEST_FAILED,
+    )
+    assert event.status == AIObservabilityEvent.Status.FAILED
+    assert event.error_code == 'INVALID_CREDENTIALS'
+    assert event.metadata['action'] == 'test_connection'

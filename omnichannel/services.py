@@ -27,7 +27,8 @@ from crm.models import Contact
 from omnichannel.ai.registry import is_provider_supported
 from workspaces.models import Workspace, WorkspaceAIProviderConfig
 
-from .models import AIProcessingRun, Conversation, Message
+from .models import AIObservabilityEvent, AIProcessingRun, Conversation, Message
+from .observability import record_ai_observability_event_safe
 
 logger = logging.getLogger(__name__)
 
@@ -754,6 +755,31 @@ def _upsert_inbound_message(
             conversation=conversation,
             message=message,
         )
+        provider_config = _get_active_provider_config_for_observability(workspace)
+        _record_ai_schedule_observability_after_commit(
+            workspace=workspace,
+            conversation=conversation,
+            message=message,
+            provider_config=provider_config,
+            event_type=(
+                AIObservabilityEvent.EventType.AI_SCHEDULED
+                if should_schedule
+                else AIObservabilityEvent.EventType.AI_SKIPPED
+            ),
+            status=(
+                AIObservabilityEvent.Status.PENDING
+                if should_schedule
+                else AIObservabilityEvent.Status.SKIPPED
+            ),
+            reason_code='' if should_schedule else reason_code or 'UNKNOWN_SKIP',
+            metadata=_build_ai_schedule_metadata(
+                message_type=message_type,
+                direction=message.direction,
+                from_me=from_me,
+                is_group=isinstance(remote_jid, str) and remote_jid.endswith('@g.us'),
+                provider_config=provider_config,
+            ),
+        )
         if should_schedule:
             schedule_ai_response_after_commit(
                 conversation=conversation,
@@ -782,6 +808,11 @@ def _process_evolution_message(data: dict[str, Any], workspace_id: str) -> None:
         _log_ai_schedule_skip(
             workspace_id=workspace_id,
             reason_code=AI_SKIP_MESSAGE_FROM_ME,
+            metadata={
+                'source': 'webhook',
+                'from_me': True,
+                'is_group': False,
+            },
         )
         return
 
@@ -794,6 +825,11 @@ def _process_evolution_message(data: dict[str, Any], workspace_id: str) -> None:
         _log_ai_schedule_skip(
             workspace_id=workspace_id,
             reason_code=AI_SKIP_UNSUPPORTED_GROUP_MESSAGE,
+            metadata={
+                'source': 'webhook',
+                'from_me': False,
+                'is_group': True,
+            },
         )
         return
 
@@ -815,6 +851,12 @@ def _process_evolution_message(data: dict[str, Any], workspace_id: str) -> None:
         _log_ai_schedule_skip(
             workspace_id=workspace_id,
             reason_code=reason_code,
+            metadata={
+                'source': 'webhook',
+                'message_type': str(message_type or ''),
+                'from_me': False,
+                'is_group': False,
+            },
         )
         return
 
@@ -834,13 +876,94 @@ def _process_evolution_message(data: dict[str, Any], workspace_id: str) -> None:
     )
 
 
-def _log_ai_schedule_skip(*, workspace_id: str, reason_code: str) -> None:
+def _log_ai_schedule_skip(
+    *,
+    workspace_id: str,
+    reason_code: str,
+    metadata: dict[str, Any] | None = None,
+) -> None:
     logger.info(
         'Resposta automatica de IA nao agendada',
         extra={
             'workspace_id': str(workspace_id),
             'reason_code': reason_code,
         },
+    )
+    try:
+        workspace = Workspace.objects.filter(id=workspace_id).first()
+    except (TypeError, ValueError, ValidationError):
+        workspace = None
+
+    if workspace is not None:
+        record_ai_observability_event_safe(
+            workspace=workspace,
+            event_type=AIObservabilityEvent.EventType.AI_SKIPPED,
+            status=AIObservabilityEvent.Status.SKIPPED,
+            reason_code=reason_code,
+            metadata={'source': 'webhook', **(metadata or {})},
+        )
+
+
+def _get_active_provider_config_for_observability(
+    workspace: Workspace,
+) -> WorkspaceAIProviderConfig | None:
+    return (
+        WorkspaceAIProviderConfig.objects.filter(
+            workspace=workspace,
+            is_active=True,
+        )
+        .only('api_key', 'provider', 'model_name')
+        .first()
+    )
+
+
+def _build_ai_schedule_metadata(
+    *,
+    message_type: str | None,
+    direction: str,
+    from_me: bool,
+    is_group: bool,
+    provider_config: WorkspaceAIProviderConfig | None,
+) -> dict[str, Any]:
+    return {
+        'source': 'webhook',
+        'message_type': message_type or '',
+        'direction': direction,
+        'from_me': bool(from_me),
+        'is_group': bool(is_group),
+        'provider_supported': (
+            is_provider_supported(provider_config.provider)
+            if provider_config is not None
+            else False
+        ),
+        'has_api_key': bool(getattr(provider_config, 'api_key', '')),
+    }
+
+
+def _record_ai_schedule_observability_after_commit(
+    *,
+    workspace: Workspace,
+    conversation: Conversation,
+    message: Message,
+    provider_config: WorkspaceAIProviderConfig | None,
+    event_type: str,
+    status: str,
+    reason_code: str,
+    metadata: dict[str, Any],
+) -> None:
+    transaction.on_commit(
+        lambda: record_ai_observability_event_safe(
+            workspace=workspace,
+            provider_config=provider_config,
+            conversation=conversation,
+            source_message=message,
+            event_type=event_type,
+            status=status,
+            provider=getattr(provider_config, 'provider', ''),
+            model_name=getattr(provider_config, 'model_name', ''),
+            reason_code=reason_code,
+            metadata=metadata,
+        ),
     )
 
 

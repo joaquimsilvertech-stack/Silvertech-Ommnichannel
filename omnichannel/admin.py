@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import AIProcessingRun, Conversation, Message
+from .models import AIObservabilityEvent, AIProcessingRun, Conversation, Message
 
 
 @admin.register(Conversation)
@@ -93,6 +93,56 @@ class AIProcessingRunAdmin(admin.ModelAdmin):
         'next_retry_at',
         'started_at',
         'finished_at',
+        'created_at',
+        'updated_at',
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_view_permission(self, request, obj=None):
+        return True
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(AIObservabilityEvent)
+class AIObservabilityEventAdmin(admin.ModelAdmin):
+    list_display = (
+        'created_at',
+        'workspace',
+        'event_type',
+        'status',
+        'provider',
+        'model_name',
+        'error_code',
+        'latency_ms',
+        'attempt_count',
+    )
+    list_filter = ('event_type', 'status', 'provider', 'error_code', 'created_at')
+    search_fields = ('workspace__name', 'provider', 'model_name', 'event_type', 'error_code')
+    list_select_related = ('workspace', 'provider_config', 'conversation')
+    readonly_fields = (
+        'id',
+        'workspace',
+        'provider_config',
+        'conversation',
+        'source_message',
+        'output_message',
+        'ai_processing_run',
+        'event_type',
+        'status',
+        'provider',
+        'model_name',
+        'reason_code',
+        'error_code',
+        'latency_ms',
+        'attempt_count',
+        'metadata',
         'created_at',
         'updated_at',
     )

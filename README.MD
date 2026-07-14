@@ -250,6 +250,22 @@ Ativacao e desativacao usam endpoints dedicados e tambem exigem owner/admin do w
 
 O endpoint de desativacao nao chama provider externo, nao remove configuracao, nao apaga `api_key`, `settings`, `system_prompt` ou `model_name`. O campo `is_active` nao deve ser enviado em `POST`, `PUT` ou `PATCH` genericos; use exclusivamente `/activate/` e `/deactivate/` para mudar esse estado.
 
+### Observabilidade e metricas por tenant
+
+O backend registra eventos seguros de observabilidade por Workspace para acompanhar webhook -> IA -> delivery sem armazenar conteudo sensivel. Os eventos ficam em `AIObservabilityEvent` e carregam apenas metadados permitidos, como `source`, `action`, `message_type`, `direction`, `provider_supported`, `has_api_key`, `retry_countdown`, `is_retryable`, `http_status` e `delivery_status`.
+
+Endpoints read-only para owner/admin:
+
+- `GET /api/workspaces/{workspace_id}/ai-observability/summary/`
+- `GET /api/workspaces/{workspace_id}/ai-observability/timeseries/`
+- `GET /api/workspaces/{workspace_id}/ai-observability/events/`
+
+Filtros aceitos: `period` (`24h`, `7d`, `30d`), `provider`, `event_type`, `status`, `error_code` e `limit` nos eventos recentes. O summary retorna totais de IA agendada, skips, tentativas, sucessos, falhas, retries, medias de latencia e erros agregados por provider/modelo. O timeseries retorna buckets simples por hora ou dia. O endpoint de events retorna eventos recentes ordenados por `created_at`.
+
+A observabilidade nao armazena `api_key`, Authorization, headers, payload bruto, prompt, `message.body`, resposta da IA, telefone ou e-mail completo. Falhas ao registrar observabilidade usam helper safe, geram apenas log sanitizado e nao quebram webhook, task de IA, delivery ou operacoes administrativas de provider.
+
+O frontend exibe a secao "Observabilidade da IA" na tela de configuracao de IA do workspace com filtro de periodo, cards de resumo, buckets recentes e tabela de eventos. Nao ha Prometheus, Grafana, dashboard avancado, exportacao CSV, alertas externos, billing, custo por token nem retry manual nesta parte.
+
 ## Blocos frontend de IA
 
 O frontend Vite/React possui blocos reutilizaveis para gerenciar providers de IA por workspace na rota `/workspaces/:workspaceId/settings/ai`. A tela consome os endpoints `/api/workspaces/{workspace_id}/ai-providers/`, `/test/`, `/activate/`, `/deactivate/`, `/credentials/replace/` e `/credentials/revoke/`, sempre usando o backend como fonte de verdade para permissao, provider suportado, ativacao, credenciais e teste de conexao.

@@ -7,6 +7,7 @@ import { useAIProviders, useCreateAIProvider } from "../../hooks/useAIProviders"
 import type { AIProviderConfigInput } from "../../lib/aiProviders";
 import { AIProviderForm } from "./AIProviderForm";
 import { AIProviderList } from "./AIProviderList";
+import { AIObservabilityPanel } from "./observability/AIObservabilityPanel";
 
 export function AIProviderSettingsPage() {
   const params = useParams();
@@ -75,6 +76,8 @@ export function AIProviderSettingsPage() {
           {activeProvider ? `${activeProvider.provider} usando ${activeProvider.model_name}` : "Nenhum provider ativo neste workspace."}
         </p>
       </section>
+
+      <AIObservabilityPanel workspaceId={workspaceId} />
 
       {success ? <p className="rounded-control bg-emerald-500/10 px-3 py-2 text-sm text-emerald-100">{success}</p> : null}
       {error ? (

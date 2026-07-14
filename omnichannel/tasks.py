@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import timedelta
+from time import perf_counter
 from typing import Any
 
 import requests
@@ -41,7 +42,11 @@ def process_ai_response(
         UnsupportedAIProviderError,
     )
     from omnichannel.ai.registry import get_provider_adapter, is_provider_supported
-    from omnichannel.models import Conversation, Message
+    from omnichannel.models import AIObservabilityEvent, Conversation, Message
+    from omnichannel.observability import (
+        calculate_latency_ms,
+        record_ai_observability_event_safe,
+    )
     from omnichannel.services import (
         AI_RETRY_BASE_SECONDS,
         MAX_AI_PROVIDER_ATTEMPTS,
@@ -203,6 +208,24 @@ def process_ai_response(
 
     if ai_processing_run is not None:
         ai_processing_run = mark_ai_processing_attempt_started(run=ai_processing_run)
+    provider_started_at = perf_counter()
+    record_ai_observability_event_safe(
+        workspace=conversation.workspace,
+        event_type=AIObservabilityEvent.EventType.AI_PROVIDER_ATTEMPT,
+        status=AIObservabilityEvent.Status.PENDING,
+        provider_config=provider_config,
+        conversation=conversation,
+        source_message=source_message,
+        ai_processing_run=ai_processing_run,
+        provider=provider_config.provider,
+        model_name=provider_config.model_name,
+        attempt_count=(
+            ai_processing_run.attempt_count
+            if ai_processing_run is not None
+            else None
+        ),
+        metadata={'source': 'process_ai_response'},
+    )
 
     try:
         adapter = get_provider_adapter(
@@ -215,6 +238,8 @@ def process_ai_response(
             settings=provider_config.settings or {},
         )
     except UnsupportedAIProviderError as exc:
+        error_code = map_ai_provider_exception_to_error_code(exc)
+        latency_ms = calculate_latency_ms(provider_started_at)
         _log_ai_provider_skip(
             'Provider de IA nao suportado para task',
             conversation=conversation,
@@ -222,10 +247,29 @@ def process_ai_response(
             exc=exc,
         )
         if ai_processing_run is not None:
-            mark_ai_processing_failed(
+            ai_processing_run = mark_ai_processing_failed(
                 run=ai_processing_run,
-                error_code=map_ai_provider_exception_to_error_code(exc),
+                error_code=error_code,
             )
+        record_ai_observability_event_safe(
+            workspace=conversation.workspace,
+            event_type=AIObservabilityEvent.EventType.AI_PROVIDER_FAILED,
+            status=AIObservabilityEvent.Status.FAILED,
+            provider_config=provider_config,
+            conversation=conversation,
+            source_message=source_message,
+            ai_processing_run=ai_processing_run,
+            provider=provider_config.provider,
+            model_name=provider_config.model_name,
+            error_code=error_code,
+            latency_ms=latency_ms,
+            attempt_count=(
+                ai_processing_run.attempt_count
+                if ai_processing_run is not None
+                else None
+            ),
+            metadata={'source': 'process_ai_response'},
+        )
         return None
     except (
         AIProviderAuthenticationError,
@@ -236,6 +280,8 @@ def process_ai_response(
         AIProviderUnavailableError,
         AIProviderError,
     ) as exc:
+        error_code = map_ai_provider_exception_to_error_code(exc)
+        latency_ms = calculate_latency_ms(provider_started_at)
         _log_ai_provider_skip(
             'Falha operacional ao gerar resposta de IA',
             conversation=conversation,
@@ -252,10 +298,29 @@ def process_ai_response(
                     base_seconds=AI_RETRY_BASE_SECONDS,
                 )
                 next_retry_at = timezone.now() + timedelta(seconds=countdown)
-                mark_ai_processing_retrying(
+                ai_processing_run = mark_ai_processing_retrying(
                     run=ai_processing_run,
-                    error_code=map_ai_provider_exception_to_error_code(exc),
+                    error_code=error_code,
                     next_retry_at=next_retry_at,
+                )
+                record_ai_observability_event_safe(
+                    workspace=conversation.workspace,
+                    event_type=AIObservabilityEvent.EventType.AI_PROVIDER_RETRYING,
+                    status=AIObservabilityEvent.Status.RETRYING,
+                    provider_config=provider_config,
+                    conversation=conversation,
+                    source_message=source_message,
+                    ai_processing_run=ai_processing_run,
+                    provider=provider_config.provider,
+                    model_name=provider_config.model_name,
+                    error_code=error_code,
+                    latency_ms=latency_ms,
+                    attempt_count=ai_processing_run.attempt_count,
+                    metadata={
+                        'source': 'process_ai_response',
+                        'retry_countdown': countdown,
+                        'is_retryable': True,
+                    },
                 )
                 logger.info(
                     'Retry de provider de IA agendado',
@@ -264,7 +329,7 @@ def process_ai_response(
                         'conversation_id': str(conversation.id),
                         'source_message_id': str(source_message_id or ''),
                         'ai_processing_run_id': str(ai_processing_run.id),
-                        'error_code': map_ai_provider_exception_to_error_code(exc),
+                        'error_code': error_code,
                         'attempt_count': ai_processing_run.attempt_count,
                         'retry_countdown': countdown,
                         'exception_type': type(exc).__name__,
@@ -281,10 +346,32 @@ def process_ai_response(
                 )
 
         if ai_processing_run is not None:
-            mark_ai_processing_failed(
+            ai_processing_run = mark_ai_processing_failed(
                 run=ai_processing_run,
-                error_code=map_ai_provider_exception_to_error_code(exc),
+                error_code=error_code,
             )
+        record_ai_observability_event_safe(
+            workspace=conversation.workspace,
+            event_type=AIObservabilityEvent.EventType.AI_PROVIDER_FAILED,
+            status=AIObservabilityEvent.Status.FAILED,
+            provider_config=provider_config,
+            conversation=conversation,
+            source_message=source_message,
+            ai_processing_run=ai_processing_run,
+            provider=provider_config.provider,
+            model_name=provider_config.model_name,
+            error_code=error_code,
+            latency_ms=latency_ms,
+            attempt_count=(
+                ai_processing_run.attempt_count
+                if ai_processing_run is not None
+                else None
+            ),
+            metadata={
+                'source': 'process_ai_response',
+                'is_retryable': is_retryable_ai_provider_error(exc),
+            },
+        )
         return None
 
     with transaction.atomic():
@@ -293,13 +380,33 @@ def process_ai_response(
             body=result.text,
         )
         if ai_processing_run is not None:
-            mark_ai_processing_succeeded(
+            ai_processing_run = mark_ai_processing_succeeded(
                 run=ai_processing_run,
                 output_message=message,
             )
         transaction.on_commit(
             lambda message_id=str(message.id): send_outbound_whatsapp_message.delay(message_id),
         )
+
+    record_ai_observability_event_safe(
+        workspace=conversation.workspace,
+        event_type=AIObservabilityEvent.EventType.AI_PROVIDER_SUCCESS,
+        status=AIObservabilityEvent.Status.SUCCESS,
+        provider_config=provider_config,
+        conversation=conversation,
+        source_message=source_message,
+        output_message=message,
+        ai_processing_run=ai_processing_run,
+        provider=provider_config.provider,
+        model_name=provider_config.model_name,
+        latency_ms=calculate_latency_ms(provider_started_at),
+        attempt_count=(
+            ai_processing_run.attempt_count
+            if ai_processing_run is not None
+            else None
+        ),
+        metadata={'source': 'process_ai_response'},
+    )
 
     return str(message.id)
 
@@ -311,7 +418,11 @@ def process_ai_response(
 )
 def send_outbound_whatsapp_message(self, message_id: str) -> str | None:
     """Entrega uma Message OUTBOUND existente pela Evolution com retry isolado."""
-    from omnichannel.models import Message
+    from omnichannel.models import AIObservabilityEvent, Message
+    from omnichannel.observability import (
+        calculate_latency_ms,
+        record_ai_observability_event_safe,
+    )
     from omnichannel.services import (
         OUTBOUND_RETRY_BASE_SECONDS,
         calculate_exponential_backoff,
@@ -344,6 +455,19 @@ def send_outbound_whatsapp_message(self, message_id: str) -> str | None:
         return None
 
     message = mark_message_delivery_attempt_started(message=message)
+    record_ai_observability_event_safe(
+        workspace=message.conversation.workspace,
+        event_type=AIObservabilityEvent.EventType.OUTBOUND_DELIVERY_ATTEMPT,
+        status=AIObservabilityEvent.Status.PENDING,
+        conversation=message.conversation,
+        output_message=message,
+        attempt_count=message.send_attempt_count,
+        metadata={
+            'source': 'outbound_delivery',
+            'delivery_status': message.status,
+        },
+    )
+    delivery_started_at = perf_counter()
 
     try:
         evolution_response = send_whatsapp_message(
@@ -367,10 +491,26 @@ def send_outbound_whatsapp_message(self, message_id: str) -> str | None:
                 base_seconds=OUTBOUND_RETRY_BASE_SECONDS,
             )
             next_retry_at = timezone.now() + timedelta(seconds=countdown)
-            mark_message_delivery_retrying(
+            message = mark_message_delivery_retrying(
                 message=message,
                 error_code=error_code,
                 next_retry_at=next_retry_at,
+            )
+            record_ai_observability_event_safe(
+                workspace=message.conversation.workspace,
+                event_type=AIObservabilityEvent.EventType.OUTBOUND_DELIVERY_RETRYING,
+                status=AIObservabilityEvent.Status.RETRYING,
+                conversation=message.conversation,
+                output_message=message,
+                error_code=error_code,
+                latency_ms=calculate_latency_ms(delivery_started_at),
+                attempt_count=message.send_attempt_count,
+                metadata={
+                    'source': 'outbound_delivery',
+                    'retry_countdown': countdown,
+                    'is_retryable': True,
+                    'delivery_status': message.status,
+                },
             )
             _log_message_send_failure(
                 conversation=message.conversation,
@@ -383,7 +523,22 @@ def send_outbound_whatsapp_message(self, message_id: str) -> str | None:
             )
             raise self.retry(exc=exc, countdown=countdown)
 
-        mark_message_as_failed(message=message, error_code=error_code)
+        message = mark_message_as_failed(message=message, error_code=error_code)
+        record_ai_observability_event_safe(
+            workspace=message.conversation.workspace,
+            event_type=AIObservabilityEvent.EventType.OUTBOUND_DELIVERY_FAILED,
+            status=AIObservabilityEvent.Status.FAILED,
+            conversation=message.conversation,
+            output_message=message,
+            error_code=error_code,
+            latency_ms=calculate_latency_ms(delivery_started_at),
+            attempt_count=message.send_attempt_count,
+            metadata={
+                'source': 'outbound_delivery',
+                'is_retryable': retryable,
+                'delivery_status': message.status,
+            },
+        )
         _log_message_send_failure(
             conversation=message.conversation,
             message=message,
@@ -394,7 +549,20 @@ def send_outbound_whatsapp_message(self, message_id: str) -> str | None:
         )
         return str(message.id)
 
-    mark_message_as_sent(message=message, external_id=external_id)
+    message = mark_message_as_sent(message=message, external_id=external_id)
+    record_ai_observability_event_safe(
+        workspace=message.conversation.workspace,
+        event_type=AIObservabilityEvent.EventType.OUTBOUND_DELIVERY_SUCCESS,
+        status=AIObservabilityEvent.Status.SUCCESS,
+        conversation=message.conversation,
+        output_message=message,
+        latency_ms=calculate_latency_ms(delivery_started_at),
+        attempt_count=message.send_attempt_count,
+        metadata={
+            'source': 'outbound_delivery',
+            'delivery_status': message.status,
+        },
+    )
     return str(message.id)
 
 
@@ -405,6 +573,9 @@ def _log_ai_task_skip(
     source_message_id: str | None,
     reason_code: str,
 ) -> None:
+    from omnichannel.models import AIObservabilityEvent
+    from omnichannel.observability import record_ai_observability_event_safe
+
     logger.info(
         message,
         extra={
@@ -413,6 +584,14 @@ def _log_ai_task_skip(
             'source_message_id': str(source_message_id or ''),
             'reason_code': reason_code,
         },
+    )
+    record_ai_observability_event_safe(
+        workspace=conversation.workspace,
+        event_type=AIObservabilityEvent.EventType.AI_SKIPPED,
+        status=AIObservabilityEvent.Status.SKIPPED,
+        conversation=conversation,
+        reason_code=reason_code,
+        metadata={'source': 'process_ai_response'},
     )
 
 

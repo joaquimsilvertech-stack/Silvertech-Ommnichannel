@@ -10,7 +10,7 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken
 
 from omnichannel.ai.connection_test import AIProviderConnectionTestResult
-from omnichannel.models import Message
+from omnichannel.models import AIObservabilityEvent, Message
 from workspaces.factories import (
     MemberFactory,
     UserFactory,
@@ -422,3 +422,59 @@ def test_generic_patch_without_is_active_still_updates_allowed_fields() -> None:
 def test_activation_endpoint_has_specific_throttle_scope() -> None:
     assert WorkspaceAIProviderConfigViewSet.activation_throttle_scope == 'ai_provider_activation'
     assert settings.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']['ai_provider_activation'] == '5/minute'
+
+
+@pytest.mark.django_db
+def test_activation_success_creates_observability_events() -> None:
+    client, _, workspace = _admin_client()
+    config = WorkspaceAIProviderConfigFactory(workspace=workspace, is_active=False)
+
+    with patch('workspaces.views.test_ai_provider_connection', return_value=_success_result(config)):
+        response = client.post(_activate_url(workspace, config), {}, format='json')
+
+    assert response.status_code == status.HTTP_200_OK
+    assert AIObservabilityEvent.objects.filter(
+        workspace=workspace,
+        event_type=AIObservabilityEvent.EventType.PROVIDER_TEST_SUCCESS,
+        provider=config.provider,
+        model_name=config.model_name,
+    ).exists()
+    assert AIObservabilityEvent.objects.filter(
+        workspace=workspace,
+        event_type=AIObservabilityEvent.EventType.PROVIDER_ACTIVATED,
+        provider=config.provider,
+        model_name=config.model_name,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_activation_connection_failure_creates_observability_event() -> None:
+    client, _, workspace = _admin_client()
+    config = WorkspaceAIProviderConfigFactory(workspace=workspace, is_active=False)
+
+    with patch('workspaces.views.test_ai_provider_connection', return_value=_error_result(config, 'INVALID_CREDENTIALS')):
+        response = client.post(_activate_url(workspace, config), {}, format='json')
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    event = AIObservabilityEvent.objects.get(
+        workspace=workspace,
+        event_type=AIObservabilityEvent.EventType.PROVIDER_TEST_FAILED,
+    )
+    assert event.error_code == 'INVALID_CREDENTIALS'
+    assert event.metadata['action'] == 'activate_provider'
+
+
+@pytest.mark.django_db
+def test_deactivation_creates_observability_event() -> None:
+    client, _, workspace = _admin_client()
+    config = WorkspaceAIProviderConfigFactory(workspace=workspace, is_active=True)
+
+    response = client.post(_deactivate_url(workspace, config), {}, format='json')
+
+    assert response.status_code == status.HTTP_200_OK
+    assert AIObservabilityEvent.objects.filter(
+        workspace=workspace,
+        event_type=AIObservabilityEvent.EventType.PROVIDER_DEACTIVATED,
+        provider=config.provider,
+        model_name=config.model_name,
+    ).exists()

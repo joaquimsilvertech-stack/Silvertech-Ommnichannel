@@ -11,7 +11,7 @@ from rest_framework.test import APIClient
 from automations.models import Flow
 from omnichannel.ai.types import AIProviderResult
 from omnichannel.factories import ContactFactory
-from omnichannel.models import Conversation, Message
+from omnichannel.models import AIObservabilityEvent, Conversation, Message
 from omnichannel.tasks import process_ai_response
 from omnichannel.services import process_whatsapp_payload
 from workspaces.factories import WorkspaceAIProviderConfigFactory
@@ -155,10 +155,12 @@ def test_ai_schedule_uses_transaction_on_commit(tenant_workspace: Workspace) -> 
     ):
         process_whatsapp_payload(_payload(), str(tenant_workspace.id))
 
-        mock_on_commit.assert_called_once()
+        assert mock_on_commit.call_count == 2
         mock_ai_delay.assert_not_called()
 
         callbacks[0]()
+        mock_ai_delay.assert_not_called()
+        callbacks[1]()
 
         inbound = Message.objects.get(conversation__workspace=tenant_workspace)
         mock_ai_delay.assert_called_once_with(
@@ -319,6 +321,42 @@ def test_webhook_does_not_call_openai_evolution_or_create_outbound(
         conversation__workspace=tenant_workspace,
         direction=Message.Direction.OUTBOUND,
     ).exists()
+
+
+@pytest.mark.django_db
+def test_webhook_scheduled_ai_creates_observability_event(tenant_workspace: Workspace) -> None:
+    WorkspaceAIProviderConfigFactory(workspace=tenant_workspace, api_key='sk-webhook-observability-key')
+
+    with (
+        patch('omnichannel.services.transaction.on_commit', side_effect=lambda callback: callback()),
+        patch('omnichannel.tasks.process_ai_response.delay'),
+        patch('omnichannel.signals.send_event'),
+    ):
+        process_whatsapp_payload(_payload(message_type='conversation'), str(tenant_workspace.id))
+
+    event = AIObservabilityEvent.objects.get(
+        workspace=tenant_workspace,
+        event_type=AIObservabilityEvent.EventType.AI_SCHEDULED,
+    )
+    assert event.status == AIObservabilityEvent.Status.PENDING
+    assert event.metadata['message_type'] == 'conversation'
+    assert event.metadata['provider_supported'] is True
+    assert event.metadata['has_api_key'] is True
+    assert 'sk-webhook-observability-key' not in str(event.metadata)
+
+
+@pytest.mark.django_db
+def test_webhook_skipped_ai_creates_observability_event(tenant_workspace: Workspace) -> None:
+    with patch('omnichannel.signals.send_event'):
+        process_whatsapp_payload(_payload(from_me=True), str(tenant_workspace.id))
+
+    event = AIObservabilityEvent.objects.get(
+        workspace=tenant_workspace,
+        event_type=AIObservabilityEvent.EventType.AI_SKIPPED,
+    )
+    assert event.status == AIObservabilityEvent.Status.SKIPPED
+    assert event.reason_code == 'MESSAGE_FROM_ME'
+    assert event.metadata['from_me'] is True
 
 
 @pytest.mark.django_db

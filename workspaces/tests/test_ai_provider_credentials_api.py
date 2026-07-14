@@ -8,7 +8,7 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken
 
 from omnichannel.ai.connection_test import AIProviderConnectionTestResult
-from omnichannel.models import Message
+from omnichannel.models import AIObservabilityEvent, Message
 from workspaces.factories import (
     MemberFactory,
     UserFactory,
@@ -326,3 +326,63 @@ def test_credentials_endpoints_do_not_touch_messages_celery_evolution_or_openai(
     mock_celery.assert_not_called()
     mock_evolution.assert_not_called()
     mock_openai.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_replace_credentials_success_creates_observability_event() -> None:
+    client, _, workspace = _admin_client()
+    config = WorkspaceAIProviderConfigFactory(workspace=workspace, is_active=False)
+
+    with patch(
+        'workspaces.services.test_ai_provider_connection',
+        return_value=_success_result(config),
+    ):
+        response = client.post(
+            _replace_url(workspace, config),
+            {'api_key': 'sk-new-provider-key'},
+            format='json',
+        )
+
+    assert response.status_code == status.HTTP_200_OK
+    event = AIObservabilityEvent.objects.get(
+        workspace=workspace,
+        event_type=AIObservabilityEvent.EventType.CREDENTIAL_REPLACED,
+    )
+    assert event.status == AIObservabilityEvent.Status.SUCCESS
+    assert event.metadata['action'] == 'replace_credentials'
+    assert 'sk-new-provider-key' not in str(event.metadata)
+
+
+@pytest.mark.django_db
+def test_replace_credentials_failure_creates_observability_event() -> None:
+    client, _, workspace = _admin_client()
+    config = WorkspaceAIProviderConfigFactory(workspace=workspace, is_active=False)
+
+    with patch('workspaces.services.test_ai_provider_connection') as mock_test:
+        response = client.post(_replace_url(workspace, config), {}, format='json')
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    mock_test.assert_not_called()
+    event = AIObservabilityEvent.objects.get(
+        workspace=workspace,
+        event_type=AIObservabilityEvent.EventType.CREDENTIAL_REPLACE_FAILED,
+    )
+    assert event.error_code == 'MISSING_API_KEY'
+    assert event.metadata['action'] == 'replace_credentials'
+
+
+@pytest.mark.django_db
+def test_revoke_credentials_creates_observability_event() -> None:
+    client, _, workspace = _admin_client()
+    config = WorkspaceAIProviderConfigFactory(workspace=workspace, api_key='sk-provider-key')
+
+    response = client.post(_revoke_url(workspace, config), {}, format='json')
+
+    assert response.status_code == status.HTTP_200_OK
+    event = AIObservabilityEvent.objects.get(
+        workspace=workspace,
+        event_type=AIObservabilityEvent.EventType.CREDENTIAL_REVOKED,
+    )
+    assert event.status == AIObservabilityEvent.Status.SUCCESS
+    assert event.metadata['action'] == 'revoke_credentials'
+    assert 'sk-provider-key' not in str(event.metadata)

@@ -17,6 +17,8 @@ from omnichannel.ai.connection_test import (
     test_ai_provider_connection,
 )
 from omnichannel.ai.registry import is_provider_supported
+from omnichannel.models import AIObservabilityEvent
+from omnichannel.observability import record_ai_observability_event_safe
 
 from .models import Member, Workspace, WorkspaceAIProviderConfig, WorkspaceInvite
 from .permissions import IsWorkspaceAdminMember
@@ -176,6 +178,21 @@ class WorkspaceAIProviderConfigViewSet(
             provider_config=provider_config,
             api_key_override=input_serializer.validated_data.get('api_key'),
         )
+        self._record_ai_admin_observability_event(
+            provider_config=provider_config,
+            event_type=(
+                AIObservabilityEvent.EventType.PROVIDER_TEST_SUCCESS
+                if result.success
+                else AIObservabilityEvent.EventType.PROVIDER_TEST_FAILED
+            ),
+            status=(
+                AIObservabilityEvent.Status.SUCCESS
+                if result.success
+                else AIObservabilityEvent.Status.FAILED
+            ),
+            error_code=result.error_code or '',
+            metadata={'action': 'test_connection'},
+        )
         payload = {
             'success': result.success,
             'provider': result.provider,
@@ -234,6 +251,21 @@ class WorkspaceAIProviderConfigViewSet(
             )
 
         result = test_ai_provider_connection(provider_config=provider_config)
+        self._record_ai_admin_observability_event(
+            provider_config=provider_config,
+            event_type=(
+                AIObservabilityEvent.EventType.PROVIDER_TEST_SUCCESS
+                if result.success
+                else AIObservabilityEvent.EventType.PROVIDER_TEST_FAILED
+            ),
+            status=(
+                AIObservabilityEvent.Status.SUCCESS
+                if result.success
+                else AIObservabilityEvent.Status.FAILED
+            ),
+            error_code=result.error_code or '',
+            metadata={'action': 'activate_provider'},
+        )
         if not result.success:
             payload = {
                 'success': False,
@@ -253,6 +285,12 @@ class WorkspaceAIProviderConfigViewSet(
         except AIProviderActivationError as exc:
             raise serializers.ValidationError(str(exc)) from exc
 
+        self._record_ai_admin_observability_event(
+            provider_config=provider_config,
+            event_type=AIObservabilityEvent.EventType.PROVIDER_ACTIVATED,
+            status=AIObservabilityEvent.Status.SUCCESS,
+            metadata={'action': 'activate_provider'},
+        )
         return Response(self._activation_payload(provider_config, is_active=True))
 
     def deactivate_provider(self, request, *args, **kwargs):
@@ -267,6 +305,12 @@ class WorkspaceAIProviderConfigViewSet(
         except AIProviderActivationError as exc:
             raise serializers.ValidationError(str(exc)) from exc
 
+        self._record_ai_admin_observability_event(
+            provider_config=provider_config,
+            event_type=AIObservabilityEvent.EventType.PROVIDER_DEACTIVATED,
+            status=AIObservabilityEvent.Status.SUCCESS,
+            metadata={'action': 'deactivate_provider'},
+        )
         return Response(self._activation_payload(provider_config, is_active=False))
 
     def replace_credentials(self, request, *args, **kwargs):
@@ -274,8 +318,16 @@ class WorkspaceAIProviderConfigViewSet(
         workspace = self.get_workspace()
         input_serializer = WorkspaceAIProviderCredentialReplaceSerializer(data=request.data)
         if not input_serializer.is_valid():
+            error_payload = self._replace_validation_error_payload(provider_config, request.data)
+            self._record_ai_admin_observability_event(
+                provider_config=provider_config,
+                event_type=AIObservabilityEvent.EventType.CREDENTIAL_REPLACE_FAILED,
+                status=AIObservabilityEvent.Status.FAILED,
+                error_code=error_payload['error_code'],
+                metadata={'action': 'replace_credentials'},
+            )
             return Response(
-                self._replace_validation_error_payload(provider_config, request.data),
+                error_payload,
                 status=400,
             )
 
@@ -286,11 +338,24 @@ class WorkspaceAIProviderConfigViewSet(
                 api_key=input_serializer.validated_data['api_key'],
             )
         except AIProviderCredentialError as exc:
+            self._record_ai_admin_observability_event(
+                provider_config=provider_config,
+                event_type=AIObservabilityEvent.EventType.CREDENTIAL_REPLACE_FAILED,
+                status=AIObservabilityEvent.Status.FAILED,
+                error_code=self._credential_error_code(exc),
+                metadata={'action': 'replace_credentials'},
+            )
             return Response(
                 self._credential_error_payload(provider_config, exc),
                 status=self._credential_error_status(exc),
             )
 
+        self._record_ai_admin_observability_event(
+            provider_config=provider_config,
+            event_type=AIObservabilityEvent.EventType.CREDENTIAL_REPLACED,
+            status=AIObservabilityEvent.Status.SUCCESS,
+            metadata={'action': 'replace_credentials'},
+        )
         serializer = self.get_serializer(provider_config)
         return Response(serializer.data)
 
@@ -311,8 +376,34 @@ class WorkspaceAIProviderConfigViewSet(
                 status=self._credential_error_status(exc),
             )
 
+        self._record_ai_admin_observability_event(
+            provider_config=provider_config,
+            event_type=AIObservabilityEvent.EventType.CREDENTIAL_REVOKED,
+            status=AIObservabilityEvent.Status.SUCCESS,
+            metadata={'action': 'revoke_credentials'},
+        )
         serializer = self.get_serializer(provider_config)
         return Response(serializer.data)
+
+    def _record_ai_admin_observability_event(
+        self,
+        *,
+        provider_config: WorkspaceAIProviderConfig,
+        event_type: str,
+        status: str,
+        error_code: str = '',
+        metadata: dict | None = None,
+    ) -> None:
+        record_ai_observability_event_safe(
+            workspace=provider_config.workspace,
+            provider_config=provider_config,
+            event_type=event_type,
+            status=status,
+            provider=provider_config.provider,
+            model_name=provider_config.model_name,
+            error_code=error_code,
+            metadata={'source': 'ai_provider_admin', **(metadata or {})},
+        )
 
     def _activation_payload(
         self,
