@@ -3,10 +3,13 @@ from __future__ import annotations
 from rest_framework import serializers
 
 from omnichannel.models import AIObservabilityEvent
+from omnichannel.observability import sanitize_observability_metadata
 
 
 class AIObservabilityEventSerializer(serializers.ModelSerializer):
     """Serializer read-only para eventos seguros de observabilidade da IA."""
+
+    metadata = serializers.SerializerMethodField()
 
     class Meta:
         model = AIObservabilityEvent
@@ -24,3 +27,6 @@ class AIObservabilityEventSerializer(serializers.ModelSerializer):
             'metadata',
         )
         read_only_fields = fields
+
+    def get_metadata(self, obj: AIObservabilityEvent) -> dict:
+        return sanitize_observability_metadata(obj.metadata)

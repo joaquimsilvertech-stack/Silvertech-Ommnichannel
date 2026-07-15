@@ -47,6 +47,25 @@ describe("aiProviders API client", () => {
     });
   });
 
+  it("createAIProvider nao envia workspace_id mesmo se recebido por acidente", async () => {
+    const spy = vi.spyOn(api, "post").mockResolvedValueOnce({ data: { id: "provider-1" } });
+
+    await createAIProvider("workspace-1", {
+      provider: "openai",
+      model_name: "gpt-4o-mini",
+      settings: {},
+      api_key: "sk-test-key",
+      workspace_id: "workspace-2"
+    } as never);
+
+    expect(spy).toHaveBeenCalledWith("/api/workspaces/workspace-1/ai-providers/", {
+      provider: "openai",
+      model_name: "gpt-4o-mini",
+      settings: {},
+      api_key: "sk-test-key"
+    });
+  });
+
   it("updateAIProvider nao envia api_key pelo endpoint generico", async () => {
     const spy = vi.spyOn(api, "patch").mockResolvedValueOnce({ data: { id: "provider-1" } });
 

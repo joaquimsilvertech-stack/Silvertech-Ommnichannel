@@ -266,6 +266,25 @@ A observabilidade nao armazena `api_key`, Authorization, headers, payload bruto,
 
 O frontend exibe a secao "Observabilidade da IA" na tela de configuracao de IA do workspace com filtro de periodo, cards de resumo, buckets recentes e tabela de eventos. Nao ha Prometheus, Grafana, dashboard avancado, exportacao CSV, alertas externos, billing, custo por token nem retry manual nesta parte.
 
+### Testes de seguranca multi-tenant
+
+A suite automatizada possui testes dedicados contra IDOR/BOLA e regressao de isolamento por Workspace. Os cenarios cobrem Workspaces, memberships, convites, CRM, Omnichannel, Tickets, Automations, AI providers, credenciais de IA, observabilidade e tasks Celery.
+
+Os testes validam que owner/admin atuam apenas dentro dos proprios workspaces, agent e nao membro sao bloqueados em endpoints administrativos, IDs validos de outro tenant retornam 403/404, payloads com `workspace`, `workspace_id`, `contact_id`, `conversation_id` ou relacoes cruzadas nao criam vinculos entre tenants, e query params como `?workspace=<outro_workspace_id>` ou searches com dados de outro tenant nao vazam entidades.
+
+Tambem ha cobertura para garantir que `api_key`, payload bruto, body de mensagem, prompt, resposta da IA, headers, telefone/e-mail de outro tenant e segredos fake `sk-...` nao aparecam em responses ou logs criticos. Chamadas reais para OpenAI/Evolution sao mockadas nos testes.
+
+Comandos uteis:
+
+```bash
+python manage.py check
+python manage.py makemigrations --check
+pytest workspaces/tests/test_multi_tenant_security.py workspaces/tests/test_ai_provider_multi_tenant_security.py -q
+pytest omnichannel/tests/test_multi_tenant_security.py omnichannel/tests/test_ai_observability_multi_tenant_security.py -q
+pytest crm/tests/test_multi_tenant_security.py tickets/tests/test_multi_tenant_security.py automations/tests/test_multi_tenant_security.py core/tests/test_idor_security.py -q
+pytest -q
+```
+
 ## Blocos frontend de IA
 
 O frontend Vite/React possui blocos reutilizaveis para gerenciar providers de IA por workspace na rota `/workspaces/:workspaceId/settings/ai`. A tela consome os endpoints `/api/workspaces/{workspace_id}/ai-providers/`, `/test/`, `/activate/`, `/deactivate/`, `/credentials/replace/` e `/credentials/revoke/`, sempre usando o backend como fonte de verdade para permissao, provider suportado, ativacao, credenciais e teste de conexao.

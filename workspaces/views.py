@@ -7,6 +7,7 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import mixins, serializers, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -52,6 +53,27 @@ AI_PROVIDER_CREDENTIAL_ERROR_STATUS = {
 }
 
 
+def _admin_workspace_ids_for(user):
+    if user.is_superuser:
+        return Workspace.objects.values_list('id', flat=True)
+
+    return Member.objects.filter(
+        user=user,
+        role__in={Member.Role.OWNER, Member.Role.ADMIN},
+    ).values_list('workspace_id', flat=True)
+
+
+def _ensure_workspace_admin(user, workspace: Workspace) -> None:
+    if user.is_superuser:
+        return
+    if not Member.objects.filter(
+        user=user,
+        workspace=workspace,
+        role__in={Member.Role.OWNER, Member.Role.ADMIN},
+    ).exists():
+        raise PermissionDenied('Sem permissao administrativa para este workspace.')
+
+
 def send_invite_email(invite: WorkspaceInvite) -> None:
     """Mock de envio — Sprint 4 integrará Resend/SMTP."""
     logger.info(
@@ -90,6 +112,23 @@ class MemberViewSet(viewsets.ModelViewSet):
     serializer_class = MemberSerializer
     permission_classes = [IsAuthenticated]
 
+    def get_queryset(self):
+        return self.queryset.filter(workspace_id__in=_admin_workspace_ids_for(self.request.user))
+
+    def perform_create(self, serializer):
+        workspace = serializer.validated_data['workspace']
+        _ensure_workspace_admin(self.request.user, workspace)
+        serializer.save()
+
+    def perform_update(self, serializer):
+        workspace = serializer.validated_data.get('workspace', serializer.instance.workspace)
+        _ensure_workspace_admin(self.request.user, workspace)
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        _ensure_workspace_admin(self.request.user, instance.workspace)
+        instance.delete()
+
 
 class WorkspaceInviteViewSet(viewsets.ModelViewSet):
     """POST /api/workspaces/invites/ — cria convite com token e expiração."""
@@ -99,7 +138,12 @@ class WorkspaceInviteViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     http_method_names = ['get', 'post', 'head', 'options']
 
+    def get_queryset(self):
+        return self.queryset.filter(workspace_id__in=_admin_workspace_ids_for(self.request.user))
+
     def perform_create(self, serializer):
+        workspace = serializer.validated_data['workspace']
+        _ensure_workspace_admin(self.request.user, workspace)
         invite = serializer.save(
             invited_by=self.request.user,
             token=uuid.uuid4(),
