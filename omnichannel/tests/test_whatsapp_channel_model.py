@@ -118,9 +118,17 @@ def test_sensitive_channel_values_are_encrypted_at_rest() -> None:
         raw_values = cursor.fetchone()
 
     assert raw_values is not None
-    assert 'fake-instance-token' not in raw_values
-    assert 'fake-webhook-secret' not in raw_values
-    assert '5511999999999' not in raw_values
+    serialized_raw_values = ' '.join(
+        value.decode('utf-8', errors='ignore')
+        if isinstance(value, bytes)
+        else str(value)
+        for value in raw_values
+        if value is not None
+    )
+
+    assert 'fake-instance-token' not in serialized_raw_values
+    assert 'fake-webhook-secret' not in serialized_raw_values
+    assert '5511999999999' not in serialized_raw_values
 
 
 @pytest.mark.django_db
