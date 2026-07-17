@@ -297,6 +297,25 @@ em campos criptografados. QR Code nao e persistido. O provisionamento automatico
 ainda nao foi implementado e o fluxo legado da Evolution continua usando
 temporariamente a configuracao global existente.
 
+A migracao da instancia global para o modelo de canais e uma operacao explicita:
+nao existe migration automatica nem tentativa de localizar um Workspace por nome.
+O operador deve informar `--workspace-id`; `--instance-name` e opcional e, quando
+omitido, utiliza `EVOLUTION_INSTANCE_NAME`.
+
+```powershell
+.\venv\Scripts\python.exe manage.py migrate_legacy_whatsapp_channel --workspace-id <UUID> --dry-run
+.\venv\Scripts\python.exe manage.py migrate_legacy_whatsapp_channel --workspace-id <UUID>
+.\venv\Scripts\python.exe manage.py migrate_legacy_whatsapp_channel --workspace-id <UUID> --rollback --dry-run
+.\venv\Scripts\python.exe manage.py migrate_legacy_whatsapp_channel --workspace-id <UUID> --rollback
+```
+
+O canal e criado localmente como `DISCONNECTED`; o estado real sera sincronizado
+em uma parte futura. A API key global nunca e copiada para o canal, e o comando
+nao chama a Evolution, nao configura webhook e nao gera QR Code. Dry-run nao
+persiste alteracoes. O rollback remove somente a associacao das conversas
+WhatsApp com o canal, preservando canal, contatos, conversas e mensagens. O
+webhook e o envio legados permanecem ativos durante esta transicao.
+
 ## Blocos frontend de IA
 
 O frontend Vite/React possui blocos reutilizaveis para gerenciar providers de IA por workspace na rota `/workspaces/:workspaceId/settings/ai`. A tela consome os endpoints `/api/workspaces/{workspace_id}/ai-providers/`, `/test/`, `/activate/`, `/deactivate/`, `/credentials/replace/` e `/credentials/revoke/`, sempre usando o backend como fonte de verdade para permissao, provider suportado, ativacao, credenciais e teste de conexao.
