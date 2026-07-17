@@ -3,7 +3,7 @@ from __future__ import annotations
 import factory
 
 from crm.models import Contact, Lead, Organization
-from omnichannel.models import Conversation, Message
+from omnichannel.models import Conversation, Message, WhatsAppChannel
 from workspaces.factories import UserFactory, WorkspaceFactory
 
 
@@ -40,14 +40,38 @@ class OrganizationFactory(factory.django.DjangoModelFactory):
     name = factory.Sequence(lambda n: f'Organization {n}')
 
 
+class WhatsAppChannelFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = WhatsAppChannel
+
+    workspace = factory.SubFactory(WorkspaceFactory)
+    provider = WhatsAppChannel.Provider.EVOLUTION
+    name = factory.Sequence(lambda n: f'WhatsApp teste {n}')
+    instance_name = factory.Sequence(lambda n: f'silvertech-test-{n}')
+    instance_id = ''
+    instance_token = ''
+    webhook_secret = ''
+    status = WhatsAppChannel.Status.DISCONNECTED
+    phone_number = ''
+
+
 class ConversationFactory(factory.django.DjangoModelFactory):
     class Meta:
         model = Conversation
 
     workspace = factory.SubFactory(WorkspaceFactory)
     contact = factory.SubFactory(ContactFactory, workspace=factory.SelfAttribute('..workspace'))
+    whatsapp_channel = None
     channel = 'whatsapp'
     status = Conversation.Status.OPEN
+
+    class Params:
+        with_whatsapp_channel = factory.Trait(
+            whatsapp_channel=factory.SubFactory(
+                WhatsAppChannelFactory,
+                workspace=factory.SelfAttribute('..workspace'),
+            ),
+        )
 
 
 class MessageFactory(factory.django.DjangoModelFactory):

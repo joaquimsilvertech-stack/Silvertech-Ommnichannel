@@ -1,11 +1,91 @@
 """
 Conversas omnichannel por workspace e contato (Card #021).
 """
-import uuid  # noqa: F401
+import uuid
 
+from django.core.exceptions import ValidationError
 from django.db import models
+from encrypted_model_fields.fields import EncryptedCharField
 
 from core.models import BaseModel
+
+
+class WhatsAppChannel(BaseModel):
+    """Conexao WhatsApp isolada por workspace."""
+
+    class Provider(models.TextChoices):
+        EVOLUTION = 'evolution', 'Evolution API'
+
+    class Status(models.TextChoices):
+        DISCONNECTED = 'disconnected', 'Desconectado'
+        PROVISIONING = 'provisioning', 'Provisionando'
+        WAITING_QR = 'waiting_qr', 'Aguardando QR Code'
+        CONNECTING = 'connecting', 'Conectando'
+        CONNECTED = 'connected', 'Conectado'
+        RECONNECTING = 'reconnecting', 'Reconectando'
+        ERROR = 'error', 'Erro'
+        DELETING = 'deleting', 'Excluindo'
+
+    workspace = models.ForeignKey(
+        'workspaces.Workspace',
+        on_delete=models.CASCADE,
+        related_name='whatsapp_channels',
+        db_index=True,
+    )
+    provider = models.CharField(
+        max_length=32,
+        choices=Provider.choices,
+        default=Provider.EVOLUTION,
+        db_index=True,
+    )
+    name = models.CharField(max_length=128)
+    instance_name = models.CharField(max_length=128, unique=True)
+    instance_id = models.CharField(max_length=255, blank=True, default='')
+    instance_token = EncryptedCharField(max_length=512, blank=True, default='')
+    webhook_public_id = models.UUIDField(
+        default=uuid.uuid4,
+        unique=True,
+        editable=False,
+    )
+    webhook_secret = EncryptedCharField(max_length=512, blank=True, default='')
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.DISCONNECTED,
+        db_index=True,
+    )
+    phone_number = EncryptedCharField(max_length=32, blank=True, default='')
+    connected_at = models.DateTimeField(null=True, blank=True)
+    last_connection_update_at = models.DateTimeField(null=True, blank=True)
+    last_error_code = models.CharField(max_length=128, blank=True, default='')
+
+    class Meta:
+        ordering = ('workspace', 'name')
+        verbose_name = 'canal WhatsApp'
+        verbose_name_plural = 'canais WhatsApp'
+        indexes = [
+            models.Index(
+                fields=['workspace', 'status'],
+                name='omni_wa_ws_status_idx',
+            ),
+            models.Index(
+                fields=['workspace', 'provider'],
+                name='omni_wa_ws_provider_idx',
+            ),
+            models.Index(
+                fields=['workspace', 'created_at'],
+                name='omni_wa_ws_created_idx',
+            ),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['workspace', 'name'],
+                name='omni_wa_unique_ws_name',
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f'{self.name} - {self.provider} - {self.status} @ {self.workspace_id}'
 
 
 class Conversation(BaseModel):
@@ -28,6 +108,13 @@ class Conversation(BaseModel):
         related_name='conversations',
         db_index=True,
     )
+    whatsapp_channel = models.ForeignKey(
+        WhatsAppChannel,
+        on_delete=models.SET_NULL,
+        related_name='conversations',
+        null=True,
+        blank=True,
+    )
     channel = models.CharField(max_length=64, db_index=True)
     status = models.CharField(
         max_length=16,
@@ -48,6 +135,21 @@ class Conversation(BaseModel):
 
     def __str__(self) -> str:
         return f'{self.channel} — {self.contact.name} ({self.status})'
+
+    def clean(self) -> None:
+        super().clean()
+        if (
+            self.whatsapp_channel_id
+            and self.workspace_id
+            and self.whatsapp_channel.workspace_id != self.workspace_id
+        ):
+            raise ValidationError(
+                {
+                    'whatsapp_channel': (
+                        'O canal WhatsApp deve pertencer ao mesmo workspace da conversa.'
+                    ),
+                },
+            )
 
 
 class Message(BaseModel):

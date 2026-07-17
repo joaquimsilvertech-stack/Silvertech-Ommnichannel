@@ -285,6 +285,18 @@ pytest crm/tests/test_multi_tenant_security.py tickets/tests/test_multi_tenant_s
 pytest -q
 ```
 
+### Canais WhatsApp por Workspace
+
+`WhatsAppChannel` representa uma conexao WhatsApp isolada por Workspace. Um
+Workspace pode possuir multiplos canais, cada um preparado para usar sua propria
+instancia da Evolution API, e `Conversation` possui uma referencia opcional ao
+canal que preserva a compatibilidade com conversas antigas.
+
+Tokens da instancia, segredos do webhook e numeros de telefone sao armazenados
+em campos criptografados. QR Code nao e persistido. O provisionamento automatico
+ainda nao foi implementado e o fluxo legado da Evolution continua usando
+temporariamente a configuracao global existente.
+
 ## Blocos frontend de IA
 
 O frontend Vite/React possui blocos reutilizaveis para gerenciar providers de IA por workspace na rota `/workspaces/:workspaceId/settings/ai`. A tela consome os endpoints `/api/workspaces/{workspace_id}/ai-providers/`, `/test/`, `/activate/`, `/deactivate/`, `/credentials/replace/` e `/credentials/revoke/`, sempre usando o backend como fonte de verdade para permissao, provider suportado, ativacao, credenciais e teste de conexao.
