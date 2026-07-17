@@ -4,9 +4,21 @@ import logging
 from unittest.mock import patch
 
 import pytest
-import requests
 from celery.exceptions import Retry
 
+from omnichannel.evolution import (
+    EvolutionAPIError,
+    EvolutionAuthenticationError,
+    EvolutionConfigurationError,
+    EvolutionConflictError,
+    EvolutionConnectionError,
+    EvolutionInvalidRequestError,
+    EvolutionInvalidResponseError,
+    EvolutionNotFoundError,
+    EvolutionRateLimitError,
+    EvolutionTimeoutError,
+    EvolutionUnavailableError,
+)
 from omnichannel.factories import MessageFactory
 from omnichannel.models import Message
 from omnichannel.tasks import send_outbound_whatsapp_message
@@ -71,9 +83,11 @@ def test_send_outbound_whatsapp_message_ignores_inbound_message() -> None:
 @pytest.mark.parametrize(
     ('exception', 'expected_error_code'),
     [
-        (requests.exceptions.Timeout('timeout'), 'EVOLUTION_TIMEOUT'),
-        (requests.exceptions.ConnectionError('connection'), 'EVOLUTION_CONNECTION_ERROR'),
-        (requests.exceptions.RequestException('request'), 'EVOLUTION_REQUEST_ERROR'),
+        (EvolutionTimeoutError(), 'EVOLUTION_TIMEOUT'),
+        (EvolutionConnectionError(), 'EVOLUTION_CONNECTION_ERROR'),
+        (EvolutionRateLimitError(), 'EVOLUTION_RATE_LIMIT'),
+        (EvolutionUnavailableError(), 'EVOLUTION_UNAVAILABLE'),
+        (EvolutionAPIError(retryable=True), 'EVOLUTION_REQUEST_ERROR'),
     ],
 )
 def test_send_outbound_whatsapp_message_retryable_error_schedules_retry(
@@ -118,7 +132,7 @@ def test_send_outbound_whatsapp_message_exhausted_retries_marks_failed_without_n
     )
 
     with (
-        patch('omnichannel.services.send_whatsapp_message', side_effect=requests.exceptions.Timeout('timeout')),
+        patch('omnichannel.services.send_whatsapp_message', side_effect=EvolutionTimeoutError()),
         patch.object(send_outbound_whatsapp_message, 'retry') as mock_retry,
         patch('omnichannel.ai.registry.get_provider_adapter') as mock_adapter,
     ):
@@ -138,7 +152,12 @@ def test_send_outbound_whatsapp_message_exhausted_retries_marks_failed_without_n
 @pytest.mark.parametrize(
     ('exception', 'expected_error_code'),
     [
-        (ValueError('invalid response'), 'EVOLUTION_INVALID_RESPONSE'),
+        (EvolutionAuthenticationError(), 'EVOLUTION_AUTHENTICATION_ERROR'),
+        (EvolutionConfigurationError(), 'EVOLUTION_CONFIGURATION_ERROR'),
+        (EvolutionInvalidRequestError(), 'EVOLUTION_INVALID_REQUEST'),
+        (EvolutionNotFoundError(), 'EVOLUTION_NOT_FOUND'),
+        (EvolutionConflictError(), 'EVOLUTION_CONFLICT'),
+        (EvolutionInvalidResponseError(), 'EVOLUTION_INVALID_RESPONSE'),
         (RuntimeError('unknown'), 'EVOLUTION_UNKNOWN_ERROR'),
     ],
 )

@@ -3,11 +3,11 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-import requests
 from celery.exceptions import Retry
 
 from omnichannel.ai.exceptions import AIProviderAuthenticationError, AIProviderTimeoutError
 from omnichannel.ai.types import AIProviderResult
+from omnichannel.evolution import EvolutionTimeoutError
 from omnichannel.factories import ConversationFactory, MessageFactory
 from omnichannel.models import AIObservabilityEvent, AIProcessingRun, Message
 from omnichannel.tasks import process_ai_response, send_outbound_whatsapp_message
@@ -150,7 +150,7 @@ def test_delivery_retryable_error_creates_retrying_event() -> None:
     )
 
     with (
-        patch('omnichannel.services.send_whatsapp_message', side_effect=requests.exceptions.Timeout('timeout')),
+        patch('omnichannel.services.send_whatsapp_message', side_effect=EvolutionTimeoutError()),
         patch.object(send_outbound_whatsapp_message, 'retry', side_effect=Retry('retry')),
     ):
         with pytest.raises(Retry):
@@ -174,7 +174,7 @@ def test_delivery_final_failure_creates_failed_event() -> None:
 
     with patch(
         'omnichannel.services.send_whatsapp_message',
-        side_effect=requests.exceptions.Timeout('timeout'),
+        side_effect=EvolutionTimeoutError(),
     ):
         result = send_outbound_whatsapp_message.run(str(message.id))
 

@@ -5,7 +5,6 @@ from datetime import timedelta
 from time import perf_counter
 from typing import Any
 
-import requests
 from celery import shared_task
 from django.db import transaction
 from django.utils import timezone
@@ -428,6 +427,7 @@ def send_outbound_whatsapp_message(self, message_id: str) -> str | None:
         calculate_exponential_backoff,
         can_retry_message_delivery,
         extract_evolution_message_external_id,
+        is_retryable_evolution_error,
         map_evolution_exception_to_error_code,
         mark_message_as_failed,
         mark_message_as_sent,
@@ -477,14 +477,7 @@ def send_outbound_whatsapp_message(self, message_id: str) -> str | None:
         external_id = extract_evolution_message_external_id(evolution_response)
     except Exception as exc:
         error_code = map_evolution_exception_to_error_code(exc)
-        retryable = isinstance(
-            exc,
-            (
-                requests.exceptions.Timeout,
-                requests.exceptions.ConnectionError,
-                requests.exceptions.RequestException,
-            ),
-        )
+        retryable = is_retryable_evolution_error(exc)
         if retryable and can_retry_message_delivery(message=message):
             countdown = calculate_exponential_backoff(
                 message.send_attempt_count,

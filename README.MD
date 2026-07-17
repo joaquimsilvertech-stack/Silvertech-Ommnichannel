@@ -316,6 +316,29 @@ persiste alteracoes. O rollback remove somente a associacao das conversas
 WhatsApp com o canal, preservando canal, contatos, conversas e mensagens. O
 webhook e o envio legados permanecem ativos durante esta transicao.
 
+### Client central da Evolution API
+
+Todas as chamadas HTTP para a Evolution passam pelo adapter em
+`omnichannel/evolution`. URL base, header `apikey`, timeout, parsing das respostas
+e exceptions proprias ficam centralizados. O client suporta criar instancia,
+configurar webhook, obter QR Code, consultar conexao, enviar texto, reiniciar,
+encerrar sessao e excluir instancia, mas nesta parte somente o envio de texto foi
+ligado ao runtime existente.
+
+O client faz exatamente uma tentativa por operacao e nao possui retry interno.
+O retry do envio outbound continua sob controle da task Celery, com os mesmos
+estados e backoff. `send_whatsapp_message` permanece como wrapper compativel e
+continua escolhendo a instancia por `EVOLUTION_INSTANCE_NAME`; o roteamento por
+`WhatsAppChannel` ainda nao foi ativado.
+
+O adapter nao persiste QR Code ou qualquer resposta, nao provisiona instancias,
+nao configura webhooks automaticamente e nao registra payloads, telefones,
+mensagens, headers ou credenciais. O contrato de referencia e a Evolution API v2,
+validado contra a imagem local v2.2.3 e a
+[documentacao oficial](https://doc.evolution-api.com/v2/api-reference). Como o
+`docker-compose.yml` ainda usa uma tag dinamica, a versao e o contrato devem ser
+conferidos novamente antes de cada deploy.
+
 ## Blocos frontend de IA
 
 O frontend Vite/React possui blocos reutilizaveis para gerenciar providers de IA por workspace na rota `/workspaces/:workspaceId/settings/ai`. A tela consome os endpoints `/api/workspaces/{workspace_id}/ai-providers/`, `/test/`, `/activate/`, `/deactivate/`, `/credentials/replace/` e `/credentials/revoke/`, sempre usando o backend como fonte de verdade para permissao, provider suportado, ativacao, credenciais e teste de conexao.

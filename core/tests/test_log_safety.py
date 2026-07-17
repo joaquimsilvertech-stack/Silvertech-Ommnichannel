@@ -11,6 +11,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from omnichannel.evolution import EvolutionUnavailableError
 from omnichannel.services import send_whatsapp_message
 from workspaces.views import send_invite_email
 
@@ -58,7 +59,7 @@ def test_evolution_failure_logs_safe_metadata_without_response_body_or_phone(
     settings,
     caplog,
 ) -> None:
-    caplog.set_level(logging.ERROR, logger='omnichannel.services')
+    caplog.set_level(logging.WARNING, logger='omnichannel.evolution.client')
     settings.EVOLUTION_API_URL = 'http://evolution.local'
     settings.EVOLUTION_API_KEY = 'test-evolution-key'
     settings.EVOLUTION_INSTANCE_NAME = 'silvertech_whatsapp'
@@ -69,13 +70,8 @@ def test_evolution_failure_logs_safe_metadata_without_response_body_or_phone(
     response.status_code = 502
     response._content = sensitive_response.encode()
     response.url = 'http://evolution.local/message/sendText/silvertech_whatsapp'
-    error = requests.exceptions.HTTPError(
-        sensitive_response,
-        response=response,
-    )
-
-    with patch('omnichannel.services.requests.post', side_effect=error):
-        with pytest.raises(requests.exceptions.HTTPError):
+    with patch('requests.sessions.Session.request', return_value=response):
+        with pytest.raises(EvolutionUnavailableError):
             send_whatsapp_message(sensitive_phone, 'Mensagem sem logar payload')
 
     assert sensitive_response not in caplog.text
@@ -83,12 +79,11 @@ def test_evolution_failure_logs_safe_metadata_without_response_body_or_phone(
     assert 'Mensagem sem logar payload' not in caplog.text
 
     error_record = next(
-        record for record in caplog.records if record.message == 'Falha no envio pela Evolution API'
+        record for record in caplog.records if record.message == 'Chamada a Evolution API falhou'
     )
-    assert error_record.operation == 'send_whatsapp_message'
+    assert error_record.operation == 'send_text'
     assert error_record.status_code == 502
-    assert error_record.exception_type == 'HTTPError'
-    assert error_record.instance_name == 'silvertech_whatsapp'
+    assert error_record.exception_type == 'EvolutionUnavailableError'
 
 
 def test_invite_logging_does_not_expose_token_or_stdout(caplog, capsys) -> None:

@@ -1,6 +1,5 @@
 import logging
 
-import requests
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django_filters.rest_framework import DjangoFilterBackend
@@ -17,6 +16,7 @@ from crm.mixins import WorkspaceScopedQuerysetMixin
 from crm.pagination import CRMCursorPagination
 
 from .models import Conversation, Message
+from .evolution import EvolutionAPIError
 from .observability import (
     DEFAULT_RECENT_EVENTS_LIMIT,
     MAX_RECENT_EVENTS_LIMIT,
@@ -194,7 +194,7 @@ class ConversationViewSet(WorkspaceScopedQuerysetMixin, viewsets.ModelViewSet):
 
         try:
             evolution_response = send_whatsapp_message(phone, body)
-        except requests.exceptions.RequestException:
+        except EvolutionAPIError:
             return Response(
                 {'detail': 'Falha ao enviar mensagem via WhatsApp.'},
                 status=status.HTTP_502_BAD_GATEWAY,

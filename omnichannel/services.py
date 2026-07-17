@@ -7,7 +7,6 @@ import logging
 import re
 from typing import Any
 
-import requests
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
@@ -27,6 +26,20 @@ from crm.models import Contact
 from omnichannel.ai.registry import is_provider_supported
 from workspaces.models import Workspace, WorkspaceAIProviderConfig
 
+from .evolution import (
+    EvolutionAPIError,
+    EvolutionAuthenticationError,
+    EvolutionConfigurationError,
+    EvolutionConflictError,
+    EvolutionConnectionError,
+    EvolutionInvalidRequestError,
+    EvolutionInvalidResponseError,
+    EvolutionNotFoundError,
+    EvolutionRateLimitError,
+    EvolutionTimeoutError,
+    EvolutionUnavailableError,
+    get_evolution_client,
+)
 from .models import AIObservabilityEvent, AIProcessingRun, Conversation, Message
 from .observability import record_ai_observability_event_safe
 
@@ -64,6 +77,13 @@ EVOLUTION_TIMEOUT = 'EVOLUTION_TIMEOUT'
 EVOLUTION_CONNECTION_ERROR = 'EVOLUTION_CONNECTION_ERROR'
 EVOLUTION_REQUEST_ERROR = 'EVOLUTION_REQUEST_ERROR'
 EVOLUTION_INVALID_RESPONSE = 'EVOLUTION_INVALID_RESPONSE'
+EVOLUTION_CONFIGURATION_ERROR = 'EVOLUTION_CONFIGURATION_ERROR'
+EVOLUTION_AUTHENTICATION_ERROR = 'EVOLUTION_AUTHENTICATION_ERROR'
+EVOLUTION_RATE_LIMIT = 'EVOLUTION_RATE_LIMIT'
+EVOLUTION_UNAVAILABLE = 'EVOLUTION_UNAVAILABLE'
+EVOLUTION_INVALID_REQUEST = 'EVOLUTION_INVALID_REQUEST'
+EVOLUTION_NOT_FOUND = 'EVOLUTION_NOT_FOUND'
+EVOLUTION_CONFLICT = 'EVOLUTION_CONFLICT'
 EVOLUTION_UNKNOWN_ERROR = 'EVOLUTION_UNKNOWN_ERROR'
 
 
@@ -121,15 +141,33 @@ def map_ai_provider_exception_to_error_code(exc: Exception) -> str:
 
 
 def map_evolution_exception_to_error_code(exc: Exception) -> str:
-    if isinstance(exc, requests.exceptions.Timeout):
+    if isinstance(exc, EvolutionConfigurationError):
+        return EVOLUTION_CONFIGURATION_ERROR
+    if isinstance(exc, EvolutionAuthenticationError):
+        return EVOLUTION_AUTHENTICATION_ERROR
+    if isinstance(exc, EvolutionRateLimitError):
+        return EVOLUTION_RATE_LIMIT
+    if isinstance(exc, EvolutionTimeoutError):
         return EVOLUTION_TIMEOUT
-    if isinstance(exc, requests.exceptions.ConnectionError):
+    if isinstance(exc, EvolutionConnectionError):
         return EVOLUTION_CONNECTION_ERROR
-    if isinstance(exc, requests.exceptions.RequestException):
-        return EVOLUTION_REQUEST_ERROR
-    if isinstance(exc, ValueError):
+    if isinstance(exc, EvolutionUnavailableError):
+        return EVOLUTION_UNAVAILABLE
+    if isinstance(exc, EvolutionInvalidRequestError):
+        return EVOLUTION_INVALID_REQUEST
+    if isinstance(exc, EvolutionNotFoundError):
+        return EVOLUTION_NOT_FOUND
+    if isinstance(exc, EvolutionConflictError):
+        return EVOLUTION_CONFLICT
+    if isinstance(exc, EvolutionInvalidResponseError):
         return EVOLUTION_INVALID_RESPONSE
+    if isinstance(exc, EvolutionAPIError):
+        return EVOLUTION_REQUEST_ERROR
     return EVOLUTION_UNKNOWN_ERROR
+
+
+def is_retryable_evolution_error(exc: Exception) -> bool:
+    return isinstance(exc, EvolutionAPIError) and bool(exc.retryable)
 
 
 def _normalize_whatsapp_jid(remote_jid: str) -> str:
@@ -1009,44 +1047,14 @@ def process_whatsapp_payload(payload: dict[str, Any], workspace_id: str) -> None
 
 
 def send_whatsapp_message(phone: str, text: str) -> dict[str, Any]:
-    """
-    Envia mensagem de texto via Evolution API.
-
-    Raises:
-        requests.exceptions.RequestException: falha de rede ou resposta HTTP da Evolution.
-    """
-    api_url = settings.EVOLUTION_API_URL.rstrip('/')
-    api_key = settings.EVOLUTION_API_KEY
+    """Envia texto pelo adapter central usando a instancia global legada."""
     instance_name = settings.EVOLUTION_INSTANCE_NAME
+    if not isinstance(instance_name, str) or not instance_name.strip():
+        raise EvolutionConfigurationError(operation='send_whatsapp_message')
 
-    if not api_url or not api_key or not instance_name:
-        raise requests.exceptions.RequestException(
-            'EVOLUTION_API_URL, EVOLUTION_API_KEY ou EVOLUTION_INSTANCE_NAME nao configurados.',
-        )
-
-    url = f'{api_url}/message/sendText/{instance_name}'
-    payload = {
-        'number': phone,
-        'text': text,
-    }
-    headers = {
-        'apikey': api_key,
-        'Content-Type': 'application/json',
-    }
-
-    try:
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as exc:
-        response = getattr(exc, 'response', None)
-        logger.error(
-            'Falha no envio pela Evolution API',
-            extra={
-                'operation': 'send_whatsapp_message',
-                'status_code': getattr(response, 'status_code', None),
-                'exception_type': type(exc).__name__,
-                'instance_name': instance_name,
-            },
-        )
-        raise
+    client = get_evolution_client()
+    return client.send_text(
+        instance_name=instance_name,
+        number=phone,
+        text=text,
+    )

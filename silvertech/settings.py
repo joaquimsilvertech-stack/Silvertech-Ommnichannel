@@ -229,6 +229,7 @@ EVOLUTION_API_URL = env('EVOLUTION_API_URL')
 # Como nao ha "default" configurado abaixo, o Django exigira essas chaves no boot.
 EVOLUTION_API_KEY = env('EVOLUTION_API_KEY')
 EVOLUTION_INSTANCE_NAME = env('EVOLUTION_INSTANCE_NAME')
+EVOLUTION_API_TIMEOUT_SECONDS = env.int('EVOLUTION_API_TIMEOUT_SECONDS', default=30)
 
 # Criptografia de campos sensiveis por tenant.
 FIELD_ENCRYPTION_KEY = required_env('FIELD_ENCRYPTION_KEY')

@@ -4,9 +4,9 @@ import logging
 from unittest.mock import patch
 
 import pytest
-import requests
 
 from crm.models import Contact
+from omnichannel.evolution import EvolutionAPIError
 from omnichannel.factories import ConversationFactory, MessageFactory
 from omnichannel.models import AIObservabilityEvent, AIProcessingRun, Conversation, Message
 from omnichannel.services import process_whatsapp_payload
@@ -203,7 +203,7 @@ def test_send_outbound_failure_logs_do_not_expose_body_or_phone(caplog) -> None:
 
     with patch(
         'omnichannel.services.send_whatsapp_message',
-        side_effect=requests.exceptions.RequestException('network'),
+        side_effect=EvolutionAPIError(),
     ):
         result = send_outbound_whatsapp_message.run(str(message.id))
 
