@@ -167,7 +167,7 @@ class EvolutionAPIClient(BaseEvolutionClient):
     def restart_instance(self, *, instance_name: str) -> EvolutionResponse:
         encoded_instance = self._encode_instance_name(instance_name)
         return self._request(
-            method='POST',
+            method='PUT',
             path=RESTART_INSTANCE_PATH.format(instance_name=encoded_instance),
             operation='restart_instance',
         )
@@ -487,4 +487,3 @@ def get_evolution_client() -> EvolutionAPIClient:
         api_key=getattr(settings, 'EVOLUTION_API_KEY', ''),
         timeout_seconds=getattr(settings, 'EVOLUTION_API_TIMEOUT_SECONDS', 30),
     )
-

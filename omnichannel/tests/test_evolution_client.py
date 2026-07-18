@@ -215,7 +215,7 @@ def test_configure_webhook_contract_normalizes_events(
     [
         ('get_qr_code', 'GET', CONNECT_INSTANCE_PATH),
         ('get_connection_state', 'GET', CONNECTION_STATE_PATH),
-        ('restart_instance', 'POST', RESTART_INSTANCE_PATH),
+        ('restart_instance', 'PUT', RESTART_INSTANCE_PATH),
         ('logout_instance', 'DELETE', LOGOUT_INSTANCE_PATH),
         ('delete_instance', 'DELETE', DELETE_INSTANCE_PATH),
     ],
@@ -233,6 +233,28 @@ def test_instance_operation_contracts(
     call = mock_session.request.call_args
     assert call.kwargs['method'] == expected_method
     assert call.kwargs['url'] == f"http://evolution.test{expected_path.format(instance_name='main')}"
+
+
+def test_restart_instance_uses_put_once_without_body_retry_or_secret_leak(
+    evolution_client: EvolutionAPIClient,
+    mock_session: Mock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mock_session.request.return_value = StubResponse(status_code=503, content=b'private-body')
+    caplog.set_level(logging.INFO, logger='omnichannel.evolution.client')
+
+    with pytest.raises(EvolutionUnavailableError) as exc_info:
+        evolution_client.restart_instance(instance_name='main')
+
+    mock_session.request.assert_called_once()
+    call = mock_session.request.call_args
+    assert call.kwargs['method'] == 'PUT'
+    assert call.kwargs['url'] == (
+        f"http://evolution.test{RESTART_INSTANCE_PATH.format(instance_name='main')}"
+    )
+    assert 'json' not in call.kwargs
+    assert 'safe-test-api-key' not in str(exc_info.value)
+    assert 'safe-test-api-key' not in caplog.text
 
 
 def test_send_text_contract_preserves_unicode(
@@ -649,4 +671,3 @@ def test_legacy_wrapper_rejects_missing_instance_with_safe_configuration_error()
 
     factory.assert_not_called()
     assert 'api-key-must-not-leak' not in str(exc_info.value)
-
