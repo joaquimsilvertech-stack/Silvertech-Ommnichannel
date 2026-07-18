@@ -199,6 +199,7 @@ REST_FRAMEWORK = {
         'webhook': '120/minute',
         'ai_provider_test_connection': '5/minute',
         'ai_provider_activation': '5/minute',
+        'whatsapp_channel_provisioning': '3/minute',
     },
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }

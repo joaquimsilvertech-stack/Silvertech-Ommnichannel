@@ -293,9 +293,10 @@ instancia da Evolution API, e `Conversation` possui uma referencia opcional ao
 canal que preserva a compatibilidade com conversas antigas.
 
 Tokens da instancia, segredos do webhook e numeros de telefone sao armazenados
-em campos criptografados. QR Code nao e persistido. O provisionamento automatico
-ainda nao foi implementado e o fluxo legado da Evolution continua usando
-temporariamente a configuracao global existente.
+em campos criptografados. QR Code nao e persistido. O provisionamento de novos
+canais e feito pelo endpoint administrativo descrito abaixo, enquanto o fluxo
+legado da Evolution continua usando temporariamente a configuracao global
+existente.
 
 A migracao da instancia global para o modelo de canais e uma operacao explicita:
 nao existe migration automatica nem tentativa de localizar um Workspace por nome.
@@ -338,6 +339,36 @@ validado contra a imagem local v2.2.3 e a
 [documentacao oficial](https://doc.evolution-api.com/v2/api-reference). Como o
 `docker-compose.yml` ainda usa uma tag dinamica, a versao e o contrato devem ser
 conferidos novamente antes de cada deploy.
+
+### Provisionamento de canais WhatsApp
+
+OWNERs e ADMINs do Workspace podem provisionar um canal por meio de
+`POST /api/workspaces/{workspace_id}/whatsapp-channels/`, enviando somente:
+
+```json
+{
+  "name": "WhatsApp principal"
+}
+```
+
+O backend gera um `instance_name` tecnico, imprevisivel e sem dados pessoais,
+reserva o canal como `PROVISIONING` e cria automaticamente a instancia na
+Evolution. O provisionamento e sincrono nesta parte e o client realiza uma unica
+tentativa. Em caso de sucesso, o canal passa para `WAITING_QR`; em caso de falha,
+permanece registrado como `ERROR` com um codigo sanitizado.
+
+As chamadas externas ocorrem fora das transacoes que bloqueiam Workspace ou
+canal. A operacao e idempotente por Workspace e nome normalizado: repetir a mesma
+solicitacao reutiliza o canal existente e nao cria uma segunda instancia. Se a
+criacao remota tiver resultado ambiguo ou a finalizacao local falhar, o backend
+tenta remover a instancia remota uma unica vez, sem apagar o canal local.
+
+O endpoint nao retorna nem persiste QR Code, e o webhook por canal ainda nao e
+configurado. Inbound e outbound continuam no roteamento legado, incluindo o uso
+temporario de `EVOLUTION_INSTANCE_NAME`. A configuracao
+`CONFIG_SESSION_PHONE_VERSION=2.3000.1041652166` permanece inalterada. Operacoes
+reais, sobretudo as destrutivas, devem usar exclusivamente uma instancia de
+teste da Evolution.
 
 ## Blocos frontend de IA
 

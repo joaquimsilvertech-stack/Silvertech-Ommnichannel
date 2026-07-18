@@ -6,6 +6,7 @@ from omnichannel.views import (
     AIObservabilitySummaryView,
     AIObservabilityTimeseriesView,
 )
+from omnichannel.whatsapp_channel_views import WorkspaceWhatsAppChannelProvisioningView
 
 from .views import (
     MemberViewSet,
@@ -20,6 +21,11 @@ router.register('members', MemberViewSet, basename='member')
 router.register('invites', WorkspaceInviteViewSet, basename='workspace-invite')
 
 urlpatterns = [
+    path(
+        '<uuid:workspace_id>/whatsapp-channels/',
+        WorkspaceWhatsAppChannelProvisioningView.as_view(),
+        name='workspace-whatsapp-channel-provisioning',
+    ),
     path(
         '<uuid:workspace_id>/ai-observability/summary/',
         AIObservabilitySummaryView.as_view(),
