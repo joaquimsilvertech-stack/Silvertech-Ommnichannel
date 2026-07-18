@@ -40,6 +40,31 @@ def normalize_evolution_qr_code(value: object) -> str | None:
     return None
 
 
+def extract_evolution_qr_code(payload: object) -> str | None:
+    """Extrai somente os formatos de QR confirmados pelo contrato atual."""
+    if not isinstance(payload, dict):
+        return None
+    for path in (
+        ('data', 'qrcode', 'base64'),
+        ('data', 'base64'),
+        ('qrcode', 'base64'),
+    ):
+        value: object = payload
+        for key in path:
+            if not isinstance(value, dict):
+                value = None
+                break
+            value = value.get(key)
+        normalized_qr = normalize_evolution_qr_code(value)
+        if normalized_qr is not None:
+            return normalized_qr
+    return None
+
+
+def get_qr_code_format(qr_code: str) -> str:
+    return 'data_uri' if qr_code.lower().startswith('data:image/') else 'base64'
+
+
 def store_evolution_qr_code(channel_id: UUID | str, qr_code: object) -> None:
     normalized_qr = normalize_evolution_qr_code(qr_code)
     if normalized_qr is None:

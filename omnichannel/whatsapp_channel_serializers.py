@@ -7,6 +7,7 @@ from typing import Any
 from rest_framework import serializers
 
 from omnichannel.models import WhatsAppChannel
+from omnichannel.whatsapp_channel_read_service import mask_whatsapp_phone_number
 
 
 class WhatsAppChannelCreateSerializer(serializers.Serializer):
@@ -58,3 +59,64 @@ class WhatsAppChannelSafeSerializer(serializers.ModelSerializer):
         )
         read_only_fields = fields
 
+
+class _WhatsAppChannelPublicFieldsMixin:
+    def get_phone_number_masked(self, channel: WhatsAppChannel) -> str | None:
+        return mask_whatsapp_phone_number(channel.phone_number)
+
+    def get_has_qr_code(self, channel: WhatsAppChannel) -> bool:
+        availability = self.context.get('qr_availability', {})
+        return bool(availability.get(channel.id, False))
+
+
+class WhatsAppChannelPublicSerializer(
+    _WhatsAppChannelPublicFieldsMixin,
+    serializers.ModelSerializer,
+):
+    phone_number_masked = serializers.SerializerMethodField()
+    has_qr_code = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WhatsAppChannel
+        fields = (
+            'id',
+            'name',
+            'provider',
+            'status',
+            'phone_number_masked',
+            'has_qr_code',
+            'connected_at',
+            'last_connection_update_at',
+            'created_at',
+            'updated_at',
+        )
+        read_only_fields = fields
+
+
+class WhatsAppChannelStatusSerializer(
+    _WhatsAppChannelPublicFieldsMixin,
+    serializers.ModelSerializer,
+):
+    phone_number_masked = serializers.SerializerMethodField()
+    has_qr_code = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WhatsAppChannel
+        fields = (
+            'id',
+            'status',
+            'phone_number_masked',
+            'has_qr_code',
+            'connected_at',
+            'last_connection_update_at',
+            'updated_at',
+        )
+        read_only_fields = fields
+
+
+class WhatsAppChannelQRCodeSerializer(serializers.Serializer):
+    id = serializers.UUIDField(source='channel_id', read_only=True)
+    status = serializers.CharField(read_only=True)
+    has_qr_code = serializers.BooleanField(read_only=True)
+    qr_code = serializers.CharField(read_only=True, allow_null=True)
+    format = serializers.CharField(source='qr_format', read_only=True, allow_null=True)

@@ -18,7 +18,7 @@ from crm.models import Contact
 from omnichannel.evolution_qr_cache import (
     EvolutionQRCodeCacheError,
     delete_evolution_qr_code,
-    normalize_evolution_qr_code,
+    extract_evolution_qr_code,
     store_evolution_qr_code,
 )
 from omnichannel.models import (
@@ -307,7 +307,7 @@ def process_qrcode_updated(
     channel: WhatsAppChannel,
     payload: dict[str, Any],
 ) -> None:
-    qr_code = _extract_qr_code(payload)
+    qr_code = extract_evolution_qr_code(payload)
     key_material = qr_code if qr_code is not None else _canonical_digest(payload)
     claim = claim_evolution_event(
         channel=channel,
@@ -1026,19 +1026,6 @@ def _extract_message_text(message: dict[str, Any]) -> str | None:
         text = extended.get('text')
         if isinstance(text, str) and text.strip():
             return text
-    return None
-
-
-def _extract_qr_code(payload: dict[str, Any]) -> str | None:
-    for path in (
-        ('data', 'qrcode', 'base64'),
-        ('data', 'base64'),
-        ('qrcode', 'base64'),
-    ):
-        value = _value_at(payload, path)
-        normalized = normalize_evolution_qr_code(value)
-        if normalized is not None:
-            return normalized
     return None
 
 

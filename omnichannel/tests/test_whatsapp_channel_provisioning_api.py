@@ -421,8 +421,8 @@ def test_provisioning_endpoint_returns_429_after_three_requests() -> None:
     assert evolution.create_instance.call_count == 3
 
 
-@pytest.mark.parametrize('method', ['get', 'put', 'patch', 'delete'])
-def test_endpoint_does_not_offer_list_update_or_delete(method: str) -> None:
+@pytest.mark.parametrize('method', ['put', 'patch', 'delete'])
+def test_endpoint_does_not_offer_update_or_delete(method: str) -> None:
     client, _, workspace = _member_client()
 
     response = getattr(client, method)(
@@ -452,4 +452,3 @@ def test_head_and_options_are_allowed_without_provisioning() -> None:
     assert head_response.status_code == status.HTTP_200_OK
     assert options_response.status_code == status.HTTP_200_OK
     provision.assert_not_called()
-

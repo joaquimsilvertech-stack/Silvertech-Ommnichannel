@@ -453,9 +453,44 @@ como `IGNORED` sem efeitos de dominio.
 Atualizacoes outbound sao localizadas somente dentro do Workspace e canal da
 conversa. As transicoes sao monotonicas de `PENDING` para `SENT`, `DELIVERED` e
 `READ`; falhas tardias nao rebaixam mensagens entregues ou lidas. O roteamento
-outbound ainda usa `EVOLUTION_INSTANCE_NAME`. A Parte 23 exposera QR/status, a
-Parte 25 concluira o hardening inbound e a Parte 26 migrara o outbound para a
-instancia do canal.
+outbound ainda usa `EVOLUTION_INSTANCE_NAME`. A Parte 23 expoe QR/status, a Parte
+25 concluira o hardening inbound e a Parte 26 migrara o outbound para a instancia
+do canal.
+
+### API de canais, QR Code e conexao
+
+Usuarios autenticados com papel `OWNER` ou `ADMIN` no Workspace, alem de
+superusers, podem usar os endpoints administrativos abaixo. Membros `AGENT` nao
+possuem acesso, e todas as consultas resolvem Workspace e canal em conjunto para
+preservar o isolamento entre tenants.
+
+```text
+GET  /api/workspaces/{workspace_id}/whatsapp-channels/
+POST /api/workspaces/{workspace_id}/whatsapp-channels/
+GET  /api/workspaces/{workspace_id}/whatsapp-channels/{channel_id}/
+GET  /api/workspaces/{workspace_id}/whatsapp-channels/{channel_id}/status/
+GET  /api/workspaces/{workspace_id}/whatsapp-channels/{channel_id}/qr/
+```
+
+Listagem e detalhe retornam somente ID, nome, provider, estado, telefone
+mascarado, disponibilidade de QR e timestamps publicos. O status retorna apenas
+o estado local, telefone mascarado, disponibilidade de QR e timestamps. O
+telefone usa mascara fixa e revela somente os quatro ultimos digitos; nomes de
+instancia, IDs externos, tokens, segredos e codigos internos nunca sao expostos.
+
+O endpoint de status usa o banco e o cache locais. `CONNECTION_UPDATE` recebido
+pelo webhook e a fonte do estado, portanto o polling nao chama a Evolution. O QR
+so pode ser exibido enquanto o canal estiver em `WAITING_QR`: a leitura consulta
+primeiro o cache isolado por canal e, em caso de cache miss, faz uma unica chamada
+controlada a `get_qr_code`. O estado e revalidado antes e depois da gravacao no
+cache para impedir a entrega de QR antigo depois da conexao.
+
+O QR permanece no cache por `EVOLUTION_QR_TTL_SECONDS` (120 segundos por padrao),
+nunca no banco, e todas as respostas administrativas usam `no-store`. O frontend
+nao deve salvar o QR em `localStorage`, session storage ou qualquer persistencia;
+deve descarta-lo assim que o status deixar `WAITING_QR`. A Parte 24 implementara
+a interface. O webhook legado permanece disponivel e o outbound continua usando
+temporariamente `EVOLUTION_INSTANCE_NAME`.
 
 ## Blocos frontend de IA
 
