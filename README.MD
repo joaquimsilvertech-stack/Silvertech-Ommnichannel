@@ -397,9 +397,8 @@ tecnico do canal e pelo SHA-256 do JSON canonico. A task recebe `channel_id` e
 payload; qualquer Workspace e derivado do `WhatsAppChannel`, nunca de query,
 header ou campo recebido.
 
-Nesta parte, a task ainda nao cria contatos, conversas ou mensagens, nao chama IA
-e nao atualiza QR ou conexao. O processamento funcional dos eventos pertence a
-Parte 22. O webhook legado em
+Depois da fila, a task processa os eventos de forma idempotente conforme descrito
+na secao seguinte. O webhook legado em
 `/api/omnichannel/webhooks/whatsapp/?workspace=<UUID>` permanece disponivel.
 
 Exemplos de configuracao local:
@@ -416,10 +415,47 @@ EVOLUTION_WEBHOOK_PUBLIC_BASE_URL=https://api.seu-dominio.com
 
 EVOLUTION_WEBHOOK_MAX_BODY_BYTES=524288
 EVOLUTION_WEBHOOK_DEDUP_TTL_SECONDS=86400
+EVOLUTION_QR_TTL_SECONDS=120
+EVOLUTION_EVENT_PROCESSING_STALE_SECONDS=300
 ```
 
 Em producao, a URL publica deve utilizar HTTPS. Nenhum segredo, token, QR ou
 payload deve ser registrado na documentacao ou nos logs.
+
+### Processamento de eventos da Evolution
+
+A task segura recebe somente `channel_id` e payload. O Workspace e sempre
+derivado do `WhatsAppChannel`; nenhum identificador de tenant recebido no JSON ou
+na query controla o roteamento. Sao processados `QRCODE_UPDATED`,
+`CONNECTION_UPDATE`, `MESSAGES_UPSERT`, `MESSAGES_UPDATE`, `SEND_MESSAGE` e,
+defensivamente, `SEND_MESSAGE_UPDATE`. Este ultimo nao foi adicionado a lista de
+eventos configurados remotamente porque o contrato usado no repositorio ainda
+precisa de smoke test real para confirmar seu registro.
+
+O QR validado fica exclusivamente no cache por `EVOLUTION_QR_TTL_SECONDS` (120
+segundos por padrao), separado pelo ID tecnico do canal. Ele nunca e salvo no
+banco, eventstream, logs ou observabilidade. Eventos de conexao atualizam os
+estados `WAITING_QR`, `CONNECTING`, `CONNECTED`, `RECONNECTING`, `DISCONNECTED` e
+`ERROR`; QR e connecting atrasados nao rebaixam um canal conectado.
+
+Mensagens inbound textuais criam ou reutilizam `Contact` no Workspace do canal e
+uma `Conversation` aberta vinculada ao proprio `WhatsAppChannel`. A `Message`
+recebe `external_id` e uma `provider_message_key` SHA-256 composta pelo provider,
+ID tecnico do canal e ID externo. O agendamento de IA continua ocorrendo apenas
+em `transaction.on_commit`, preservando handoff e as regras atuais.
+
+O Redis continua sendo a primeira deduplicacao da entrada. O PostgreSQL mantem
+um `EvolutionWebhookEvent` por canal e chave hashada para idempotencia duravel,
+retry de falhas e reclaim de processamento stale. O recibo nao armazena payload,
+mensagem, QR, telefone, headers ou credenciais. Eventos desconhecidos terminam
+como `IGNORED` sem efeitos de dominio.
+
+Atualizacoes outbound sao localizadas somente dentro do Workspace e canal da
+conversa. As transicoes sao monotonicas de `PENDING` para `SENT`, `DELIVERED` e
+`READ`; falhas tardias nao rebaixam mensagens entregues ou lidas. O roteamento
+outbound ainda usa `EVOLUTION_INSTANCE_NAME`. A Parte 23 exposera QR/status, a
+Parte 25 concluira o hardening inbound e a Parte 26 migrara o outbound para a
+instancia do canal.
 
 ## Blocos frontend de IA
 

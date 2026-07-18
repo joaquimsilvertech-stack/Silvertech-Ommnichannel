@@ -726,6 +726,69 @@ def build_conversation_context_for_ai(
     return messages
 
 
+def handle_inbound_ai_scheduling(
+    *,
+    workspace: Workspace,
+    conversation: Conversation,
+    message: Message,
+    remote_jid: str | None,
+    from_me: bool,
+    message_type: str | None,
+) -> tuple[bool, str | None]:
+    """Preserva a decisao, observabilidade e fila de IA dos fluxos inbound."""
+    message.ai_from_me = from_me
+    message.ai_remote_jid = remote_jid
+    message.ai_message_type = message_type
+
+    should_schedule, reason_code = should_schedule_ai_response(
+        workspace=workspace,
+        conversation=conversation,
+        message=message,
+    )
+    provider_config = _get_active_provider_config_for_observability(workspace)
+    _record_ai_schedule_observability_after_commit(
+        workspace=workspace,
+        conversation=conversation,
+        message=message,
+        provider_config=provider_config,
+        event_type=(
+            AIObservabilityEvent.EventType.AI_SCHEDULED
+            if should_schedule
+            else AIObservabilityEvent.EventType.AI_SKIPPED
+        ),
+        status=(
+            AIObservabilityEvent.Status.PENDING
+            if should_schedule
+            else AIObservabilityEvent.Status.SKIPPED
+        ),
+        reason_code='' if should_schedule else reason_code or 'UNKNOWN_SKIP',
+        metadata=_build_ai_schedule_metadata(
+            message_type=message_type,
+            direction=message.direction,
+            from_me=from_me,
+            is_group=isinstance(remote_jid, str) and remote_jid.endswith('@g.us'),
+            provider_config=provider_config,
+        ),
+    )
+    if should_schedule:
+        schedule_ai_response_after_commit(
+            conversation=conversation,
+            source_message=message,
+        )
+        return True, None
+
+    logger.info(
+        'Resposta automatica de IA nao agendada',
+        extra={
+            'workspace_id': str(workspace.id),
+            'conversation_id': str(conversation.id),
+            'message_id': str(message.id),
+            'reason_code': reason_code,
+        },
+    )
+    return False, reason_code
+
+
 def _upsert_inbound_message(
     *,
     workspace_id: str,
@@ -784,55 +847,13 @@ def _upsert_inbound_message(
             status=Message.Status.DELIVERED,
             external_id=external_id,
         )
-        message.ai_from_me = from_me
-        message.ai_remote_jid = remote_jid
-        message.ai_message_type = message_type
-
-        should_schedule, reason_code = should_schedule_ai_response(
+        handle_inbound_ai_scheduling(
             workspace=workspace,
             conversation=conversation,
             message=message,
-        )
-        provider_config = _get_active_provider_config_for_observability(workspace)
-        _record_ai_schedule_observability_after_commit(
-            workspace=workspace,
-            conversation=conversation,
-            message=message,
-            provider_config=provider_config,
-            event_type=(
-                AIObservabilityEvent.EventType.AI_SCHEDULED
-                if should_schedule
-                else AIObservabilityEvent.EventType.AI_SKIPPED
-            ),
-            status=(
-                AIObservabilityEvent.Status.PENDING
-                if should_schedule
-                else AIObservabilityEvent.Status.SKIPPED
-            ),
-            reason_code='' if should_schedule else reason_code or 'UNKNOWN_SKIP',
-            metadata=_build_ai_schedule_metadata(
-                message_type=message_type,
-                direction=message.direction,
-                from_me=from_me,
-                is_group=isinstance(remote_jid, str) and remote_jid.endswith('@g.us'),
-                provider_config=provider_config,
-            ),
-        )
-        if should_schedule:
-            schedule_ai_response_after_commit(
-                conversation=conversation,
-                source_message=message,
-            )
-            return
-
-        logger.info(
-            'Resposta automatica de IA nao agendada',
-            extra={
-                'workspace_id': str(workspace.id),
-                'conversation_id': str(conversation.id),
-                'message_id': str(message.id),
-                'reason_code': reason_code,
-            },
+            remote_jid=remote_jid,
+            from_me=from_me,
+            message_type=message_type,
         )
 
 

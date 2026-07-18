@@ -244,6 +244,11 @@ EVOLUTION_WEBHOOK_DEDUP_TTL_SECONDS = env.int(
     'EVOLUTION_WEBHOOK_DEDUP_TTL_SECONDS',
     default=86400,
 )
+EVOLUTION_QR_TTL_SECONDS = env.int('EVOLUTION_QR_TTL_SECONDS', default=120)
+EVOLUTION_EVENT_PROCESSING_STALE_SECONDS = env.int(
+    'EVOLUTION_EVENT_PROCESSING_STALE_SECONDS',
+    default=300,
+)
 if EVOLUTION_WEBHOOK_MAX_BODY_BYTES <= 0:
     raise ImproperlyConfigured(
         'EVOLUTION_WEBHOOK_MAX_BODY_BYTES deve ser um inteiro positivo.',
@@ -251,6 +256,14 @@ if EVOLUTION_WEBHOOK_MAX_BODY_BYTES <= 0:
 if EVOLUTION_WEBHOOK_DEDUP_TTL_SECONDS <= 0:
     raise ImproperlyConfigured(
         'EVOLUTION_WEBHOOK_DEDUP_TTL_SECONDS deve ser um inteiro positivo.',
+    )
+if EVOLUTION_QR_TTL_SECONDS <= 0:
+    raise ImproperlyConfigured(
+        'EVOLUTION_QR_TTL_SECONDS deve ser um inteiro positivo.',
+    )
+if EVOLUTION_EVENT_PROCESSING_STALE_SECONDS <= 0:
+    raise ImproperlyConfigured(
+        'EVOLUTION_EVENT_PROCESSING_STALE_SECONDS deve ser um inteiro positivo.',
     )
 
 # Criptografia de campos sensiveis por tenant.

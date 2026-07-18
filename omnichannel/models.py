@@ -5,6 +5,7 @@ import uuid
 
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.utils import timezone
 from encrypted_model_fields.fields import EncryptedCharField
 
 from core.models import BaseModel
@@ -86,6 +87,60 @@ class WhatsAppChannel(BaseModel):
 
     def __str__(self) -> str:
         return f'{self.name} - {self.provider} - {self.status} @ {self.workspace_id}'
+
+
+class EvolutionWebhookEvent(BaseModel):
+    """Recibo tecnico e duravel para processamento idempotente da Evolution."""
+
+    class Status(models.TextChoices):
+        PROCESSING = 'PROCESSING', 'Processing'
+        PROCESSED = 'PROCESSED', 'Processed'
+        IGNORED = 'IGNORED', 'Ignored'
+        FAILED = 'FAILED', 'Failed'
+
+    whatsapp_channel = models.ForeignKey(
+        WhatsAppChannel,
+        on_delete=models.CASCADE,
+        related_name='evolution_webhook_events',
+    )
+    event_type = models.CharField(max_length=64)
+    deduplication_key = models.CharField(max_length=64)
+    external_id = models.CharField(max_length=255, blank=True, default='')
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PROCESSING,
+    )
+    attempt_count = models.PositiveIntegerField(default=1)
+    error_code = models.CharField(max_length=64, blank=True, default='')
+    started_at = models.DateTimeField(default=timezone.now)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ('-created_at',)
+        verbose_name = 'evento de webhook Evolution'
+        verbose_name_plural = 'eventos de webhook Evolution'
+        indexes = [
+            models.Index(
+                fields=['whatsapp_channel', 'event_type'],
+                name='omni_evo_channel_event_idx',
+            ),
+            models.Index(
+                fields=['whatsapp_channel', 'status'],
+                name='omni_evo_channel_status_idx',
+            ),
+            models.Index(fields=['external_id'], name='omni_evo_external_id_idx'),
+            models.Index(fields=['created_at'], name='omni_evo_created_at_idx'),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['whatsapp_channel', 'deduplication_key'],
+                name='omni_evo_event_unique_channel_key',
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f'{self.event_type} {self.status} @ {self.id}'
 
 
 class Conversation(BaseModel):
@@ -192,6 +247,13 @@ class Message(BaseModel):
         db_index=True,
         help_text='ID da mensagem no provedor (ex.: wamid da Meta).',
     )
+    provider_message_key = models.CharField(
+        max_length=64,
+        null=True,
+        blank=True,
+        editable=False,
+        db_index=True,
+    )
     send_error_code = models.CharField(max_length=64, blank=True)
     send_attempt_count = models.PositiveIntegerField(default=0)
     last_send_attempt_at = models.DateTimeField(null=True, blank=True)
@@ -203,6 +265,13 @@ class Message(BaseModel):
         verbose_name_plural = 'mensagens'
         indexes = [
             models.Index(fields=['conversation', 'created_at']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['provider_message_key'],
+                condition=models.Q(provider_message_key__isnull=False),
+                name='omni_message_unique_provider_key',
+            ),
         ]
 
     def __str__(self) -> str:

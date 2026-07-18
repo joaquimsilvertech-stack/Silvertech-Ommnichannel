@@ -3,7 +3,12 @@ from __future__ import annotations
 import factory
 
 from crm.models import Contact, Lead, Organization
-from omnichannel.models import Conversation, Message, WhatsAppChannel
+from omnichannel.models import (
+    Conversation,
+    EvolutionWebhookEvent,
+    Message,
+    WhatsAppChannel,
+)
 from workspaces.factories import UserFactory, WorkspaceFactory
 
 
@@ -82,3 +87,14 @@ class MessageFactory(factory.django.DjangoModelFactory):
     body = factory.Faker('sentence')
     direction = Message.Direction.INBOUND
     status = Message.Status.DELIVERED
+
+
+class EvolutionWebhookEventFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = EvolutionWebhookEvent
+
+    whatsapp_channel = factory.SubFactory(WhatsAppChannelFactory)
+    event_type = 'MESSAGES_UPSERT'
+    deduplication_key = factory.Sequence(lambda n: f'{n:064x}')
+    external_id = ''
+    status = EvolutionWebhookEvent.Status.PROCESSING

@@ -22,15 +22,24 @@ def process_whatsapp_webhook_task(payload: dict[str, Any], workspace_id: str) ->
     process_whatsapp_payload(payload, workspace_id)
 
 
-@shared_task(name='omnichannel.process_evolution_channel_webhook')
+@shared_task(
+    bind=True,
+    name='omnichannel.process_evolution_channel_webhook',
+    max_retries=3,
+)
 def process_evolution_channel_webhook_task(
+    self,
     channel_id: str,
     payload: dict[str, Any],
 ) -> None:
-    """Estabelece a fronteira assincrona do webhook seguro por canal."""
+    """Processa eventos do webhook seguro usando somente o canal como tenant root."""
     from uuid import UUID
 
-    from omnichannel.evolution_webhook import sanitize_evolution_webhook_event
+    from omnichannel.evolution_event_processing import (
+        EvolutionEventProcessingError,
+        normalize_evolution_event_type,
+        process_evolution_channel_event,
+    )
     from omnichannel.models import WhatsAppChannel
 
     try:
@@ -60,11 +69,65 @@ def process_evolution_channel_webhook_task(
         )
         return None
 
-    event_type = sanitize_evolution_webhook_event(
-        payload.get('event') if isinstance(payload, dict) else None,
-    )
+    if not isinstance(payload, dict):
+        logger.warning(
+            'Task de webhook Evolution ignorou payload invalido',
+            extra={
+                'channel_id': str(channel.id),
+                'workspace_id': str(channel.workspace_id),
+                'operation': 'process_evolution_channel_webhook',
+                'event_type': 'UNSUPPORTED_EVENT',
+                'exception_type': 'InvalidPayloadType',
+            },
+        )
+        return None
+
+    event_type = normalize_evolution_event_type(payload.get('event'))
     logger.info(
-        'Task de webhook Evolution recebeu evento para processamento futuro',
+        'Task de webhook Evolution recebeu evento para processamento',
+        extra={
+            'channel_id': str(channel.id),
+            'workspace_id': str(channel.workspace_id),
+            'operation': 'process_evolution_channel_webhook',
+            'event_type': event_type,
+        },
+    )
+
+    try:
+        process_evolution_channel_event(channel=channel, payload=payload)
+    except EvolutionEventProcessingError as exc:
+        logger.warning(
+            'Falha controlada no processamento de evento Evolution',
+            extra={
+                'channel_id': str(channel.id),
+                'workspace_id': str(channel.workspace_id),
+                'operation': 'process_evolution_channel_webhook',
+                'event_type': event_type,
+                'evolution_event_id': exc.event_id or '',
+                'error_code': exc.error_code,
+                'retryable': exc.retryable,
+                'exception_type': type(exc).__name__,
+            },
+        )
+        if exc.retryable:
+            countdown = min(5 * (2 ** int(self.request.retries)), 60)
+            raise self.retry(exc=exc, countdown=countdown)
+        return None
+    except Exception as exc:
+        logger.warning(
+            'Falha inesperada na task de evento Evolution',
+            extra={
+                'channel_id': str(channel.id),
+                'workspace_id': str(channel.workspace_id),
+                'operation': 'process_evolution_channel_webhook',
+                'event_type': event_type,
+                'exception_type': type(exc).__name__,
+            },
+        )
+        raise
+
+    logger.info(
+        'Task de webhook Evolution concluiu processamento',
         extra={
             'channel_id': str(channel.id),
             'workspace_id': str(channel.workspace_id),

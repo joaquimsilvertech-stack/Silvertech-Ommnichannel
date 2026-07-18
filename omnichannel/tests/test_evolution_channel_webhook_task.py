@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import inspect
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -8,7 +9,7 @@ import pytest
 
 from crm.models import Contact
 from omnichannel.factories import WhatsAppChannelFactory
-from omnichannel.models import Conversation, Message
+from omnichannel.models import Conversation, EvolutionWebhookEvent, Message
 from omnichannel.tasks import process_evolution_channel_webhook_task
 
 pytestmark = pytest.mark.django_db
@@ -86,7 +87,7 @@ def test_evolution_channel_webhook_task_ignores_removed_channel_safely(
         ('messages.update', 'MESSAGES_UPDATE'),
         ('send.message', 'SEND_MESSAGE'),
         ('private-message-or-secret', 'UNSUPPORTED_EVENT'),
-        (None, 'UNKNOWN_EVENT'),
+        (None, 'UNSUPPORTED_EVENT'),
     ],
 )
 def test_evolution_channel_webhook_task_sanitizes_event_for_logs(
@@ -104,7 +105,7 @@ def test_evolution_channel_webhook_task_sanitizes_event_for_logs(
 
     record = next(record for record in caplog.records if hasattr(record, 'event_type'))
     assert record.event_type == expected_event
-    if expected_event == 'UNSUPPORTED_EVENT':
+    if expected_event == 'UNSUPPORTED_EVENT' and isinstance(event_value, str):
         assert str(event_value) not in _module_log_text(caplog)
 
 
@@ -178,5 +179,121 @@ def test_evolution_channel_webhook_task_handles_non_mapping_payload_without_leak
     )
 
     assert result is None
-    assert 'UNKNOWN_EVENT' in _module_log_text(caplog)
+    assert 'UNSUPPORTED_EVENT' in _module_log_text(caplog)
     assert 'private-payload-content' not in _module_log_text(caplog)
+
+
+def test_evolution_channel_webhook_task_calls_dispatcher_once_with_resolved_channel() -> None:
+    channel = WhatsAppChannelFactory()
+    payload = {'event': 'MESSAGES_UPSERT', 'data': {'invalid': True}}
+
+    with patch(
+        'omnichannel.evolution_event_processing.process_evolution_channel_event',
+    ) as dispatcher:
+        process_evolution_channel_webhook_task(str(channel.id), payload)
+
+    dispatcher.assert_called_once()
+    assert dispatcher.call_args.kwargs['channel'].id == channel.id
+    assert dispatcher.call_args.kwargs['channel'].workspace_id == channel.workspace_id
+    assert dispatcher.call_args.kwargs['payload'] is payload
+
+
+def test_evolution_channel_webhook_task_marks_unknown_event_ignored() -> None:
+    channel = WhatsAppChannelFactory()
+    process_evolution_channel_webhook_task(
+        str(channel.id),
+        {'event': 'private-unsupported-event', 'data': {'private': 'value'}},
+    )
+
+    event = EvolutionWebhookEvent.objects.get(whatsapp_channel=channel)
+    assert event.status == EvolutionWebhookEvent.Status.IGNORED
+    assert event.error_code == 'UNSUPPORTED_EVENT'
+
+
+def test_evolution_channel_webhook_task_retries_only_retryable_errors() -> None:
+    from omnichannel.evolution_event_processing import EvolutionEventProcessingError
+
+    channel = WhatsAppChannelFactory()
+    processing_error = EvolutionEventProcessingError(
+        'QR_CACHE_UNAVAILABLE',
+        retryable=True,
+    )
+    retry_sentinel = RuntimeError('retry-called')
+
+    with (
+        patch(
+            'omnichannel.evolution_event_processing.process_evolution_channel_event',
+            side_effect=processing_error,
+        ),
+        patch.object(
+            process_evolution_channel_webhook_task,
+            'retry',
+            side_effect=retry_sentinel,
+        ) as retry,
+        pytest.raises(RuntimeError, match='retry-called'),
+    ):
+        process_evolution_channel_webhook_task(
+            str(channel.id),
+            {'event': 'QRCODE_UPDATED'},
+        )
+
+    retry.assert_called_once_with(exc=processing_error, countdown=5)
+    assert process_evolution_channel_webhook_task.max_retries == 3
+
+
+def test_evolution_channel_webhook_task_does_not_retry_permanent_error() -> None:
+    from omnichannel.evolution_event_processing import EvolutionEventProcessingError
+
+    channel = WhatsAppChannelFactory()
+    processing_error = EvolutionEventProcessingError(
+        'INVALID_EVENT_STALE_SETTING',
+        retryable=False,
+    )
+    with (
+        patch(
+            'omnichannel.evolution_event_processing.process_evolution_channel_event',
+            side_effect=processing_error,
+        ),
+        patch.object(process_evolution_channel_webhook_task, 'retry') as retry,
+    ):
+        result = process_evolution_channel_webhook_task(
+            str(channel.id),
+            {'event': 'MESSAGES_UPSERT'},
+        )
+
+    assert result is None
+    retry.assert_not_called()
+
+
+def test_evolution_channel_webhook_task_propagates_programming_errors_without_retry() -> None:
+    channel = WhatsAppChannelFactory()
+    with (
+        patch(
+            'omnichannel.evolution_event_processing.process_evolution_channel_event',
+            side_effect=TypeError('private-programming-detail'),
+        ),
+        patch.object(process_evolution_channel_webhook_task, 'retry') as retry,
+        pytest.raises(TypeError),
+    ):
+        process_evolution_channel_webhook_task(
+            str(channel.id),
+            {'event': 'MESSAGES_UPSERT'},
+        )
+    retry.assert_not_called()
+
+
+def test_task_contract_has_no_workspace_argument() -> None:
+    signature = inspect.signature(process_evolution_channel_webhook_task.run)
+    assert list(signature.parameters) == ['channel_id', 'payload']
+
+
+def test_send_message_update_is_normalized_defensively() -> None:
+    channel = WhatsAppChannelFactory()
+    with patch(
+        'omnichannel.evolution_event_processing.process_evolution_channel_event',
+    ) as dispatcher:
+        process_evolution_channel_webhook_task(
+            str(channel.id),
+            {'event': 'send.message.update', 'data': {}},
+        )
+    dispatcher.assert_called_once()
