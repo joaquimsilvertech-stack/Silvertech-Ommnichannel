@@ -363,12 +363,63 @@ solicitacao reutiliza o canal existente e nao cria uma segunda instancia. Se a
 criacao remota tiver resultado ambiguo ou a finalizacao local falhar, o backend
 tenta remover a instancia remota uma unica vez, sem apagar o canal local.
 
-O endpoint nao retorna nem persiste QR Code, e o webhook por canal ainda nao e
-configurado. Inbound e outbound continuam no roteamento legado, incluindo o uso
-temporario de `EVOLUTION_INSTANCE_NAME`. A configuracao
+O endpoint nao retorna nem persiste QR Code. Para canais novos, o webhook seguro
+por canal e configurado automaticamente depois da criacao da instancia; o canal
+so chega a `WAITING_QR` quando as duas operacoes externas terminam. Inbound e
+outbound continuam no roteamento legado, incluindo o uso temporario de
+`EVOLUTION_INSTANCE_NAME`. A configuracao
 `CONFIG_SESSION_PHONE_VERSION=2.3000.1041652166` permanece inalterada. Operacoes
 reais, sobretudo as destrutivas, devem usar exclusivamente uma instancia de
 teste da Evolution.
+
+### Webhook seguro por canal
+
+Cada canal novo recebe uma URL publica exclusiva:
+
+```text
+POST /api/omnichannel/webhooks/evolution/{webhook_public_id}/
+```
+
+O UUID publico identifica o canal, mas nao autentica a chamada. A Evolution envia
+o segredo individual no header `X-SilverTech-Webhook-Secret`; o backend armazena
+esse segredo criptografado e compara digests SHA-256 com `compare_digest`. Canal
+inexistente, segredo ausente e segredo incorreto recebem a mesma resposta.
+
+Durante o provisionamento, o backend registra os eventos `QRCODE_UPDATED`,
+`CONNECTION_UPDATE`, `MESSAGES_UPSERT`, `MESSAGES_UPDATE` e `SEND_MESSAGE`. A URL
+e criada somente a partir de `EVOLUTION_WEBHOOK_PUBLIC_BASE_URL`, nunca do Host
+enviado por uma requisicao.
+
+O endpoint aceita apenas objeto JSON, limita o corpo a 512 KiB por padrao e usa
+throttle de 300 requisicoes por minuto, separado por canal e IP. Entregas iguais
+sao deduplicadas por 24 horas com uma chave Redis composta somente pelo ID
+tecnico do canal e pelo SHA-256 do JSON canonico. A task recebe `channel_id` e
+payload; qualquer Workspace e derivado do `WhatsAppChannel`, nunca de query,
+header ou campo recebido.
+
+Nesta parte, a task ainda nao cria contatos, conversas ou mensagens, nao chama IA
+e nao atualiza QR ou conexao. O processamento funcional dos eventos pertence a
+Parte 22. O webhook legado em
+`/api/omnichannel/webhooks/whatsapp/?workspace=<UUID>` permanece disponivel.
+
+Exemplos de configuracao local:
+
+```dotenv
+# Django no host e Evolution no Docker
+EVOLUTION_WEBHOOK_PUBLIC_BASE_URL=http://host.docker.internal:8000
+
+# Django e Evolution no mesmo compose
+EVOLUTION_WEBHOOK_PUBLIC_BASE_URL=http://backend:8000
+
+# Evolution remota ou producao
+EVOLUTION_WEBHOOK_PUBLIC_BASE_URL=https://api.seu-dominio.com
+
+EVOLUTION_WEBHOOK_MAX_BODY_BYTES=524288
+EVOLUTION_WEBHOOK_DEDUP_TTL_SECONDS=86400
+```
+
+Em producao, a URL publica deve utilizar HTTPS. Nenhum segredo, token, QR ou
+payload deve ser registrado na documentacao ou nos logs.
 
 ## Blocos frontend de IA
 

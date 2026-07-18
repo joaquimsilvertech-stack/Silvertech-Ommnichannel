@@ -22,6 +22,59 @@ def process_whatsapp_webhook_task(payload: dict[str, Any], workspace_id: str) ->
     process_whatsapp_payload(payload, workspace_id)
 
 
+@shared_task(name='omnichannel.process_evolution_channel_webhook')
+def process_evolution_channel_webhook_task(
+    channel_id: str,
+    payload: dict[str, Any],
+) -> None:
+    """Estabelece a fronteira assincrona do webhook seguro por canal."""
+    from uuid import UUID
+
+    from omnichannel.evolution_webhook import sanitize_evolution_webhook_event
+    from omnichannel.models import WhatsAppChannel
+
+    try:
+        normalized_channel_id = UUID(str(channel_id))
+    except (TypeError, ValueError, AttributeError):
+        logger.warning(
+            'Task de webhook Evolution ignorou identificador invalido',
+            extra={
+                'operation': 'process_evolution_channel_webhook',
+                'exception_type': 'InvalidChannelId',
+            },
+        )
+        return None
+
+    try:
+        channel = WhatsAppChannel.objects.select_related('workspace').get(
+            id=normalized_channel_id,
+        )
+    except WhatsAppChannel.DoesNotExist:
+        logger.info(
+            'Task de webhook Evolution ignorou canal inexistente',
+            extra={
+                'channel_id': str(normalized_channel_id),
+                'operation': 'process_evolution_channel_webhook',
+                'exception_type': 'WhatsAppChannelDoesNotExist',
+            },
+        )
+        return None
+
+    event_type = sanitize_evolution_webhook_event(
+        payload.get('event') if isinstance(payload, dict) else None,
+    )
+    logger.info(
+        'Task de webhook Evolution recebeu evento para processamento futuro',
+        extra={
+            'channel_id': str(channel.id),
+            'workspace_id': str(channel.workspace_id),
+            'operation': 'process_evolution_channel_webhook',
+            'event_type': event_type,
+        },
+    )
+    return None
+
+
 @shared_task(bind=True, name='omnichannel.process_ai_response', max_retries=MAX_AI_PROVIDER_ATTEMPTS)
 def process_ai_response(
     self,

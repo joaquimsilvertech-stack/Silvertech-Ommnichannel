@@ -26,6 +26,13 @@ from omnichannel.evolution import (
     EvolutionUnexpectedResponseError,
     get_evolution_client,
 )
+from omnichannel.evolution_webhook import (
+    EVOLUTION_CHANNEL_WEBHOOK_EVENTS,
+    EVOLUTION_WEBHOOK_SECRET_HEADER,
+    EvolutionWebhookConfigurationError,
+    build_evolution_channel_webhook_url,
+    generate_webhook_secret,
+)
 from omnichannel.models import WhatsAppChannel
 from workspaces.models import Workspace
 
@@ -101,6 +108,33 @@ def provision_whatsapp_channel(
             idempotent_reuse=True,
         )
 
+    try:
+        webhook_url = build_evolution_channel_webhook_url(
+            webhook_public_id=channel.webhook_public_id,
+        )
+    except EvolutionWebhookConfigurationError as exc:
+        error_code = _sanitize_error_code(exc.error_code)
+        _mark_channel_error_safely(channel=channel, error_code=error_code)
+        logger.warning(
+            'Configuracao publica do webhook Evolution invalida',
+            extra={
+                'workspace_id': str(channel.workspace_id),
+                'channel_id': str(channel.id),
+                'instance_name': channel.instance_name,
+                'operation': 'build_evolution_webhook_url',
+                'status': WhatsAppChannel.Status.ERROR,
+                'error_code': error_code,
+                'exception_type': type(exc).__name__,
+                'remote_cleanup_attempted': False,
+                'remote_cleanup_succeeded': False,
+            },
+        )
+        raise WhatsAppChannelProvisioningError(
+            error_code=error_code,
+            channel_id=channel.id,
+            http_status=503,
+        ) from None
+
     resolved_client = client
     try:
         if resolved_client is None:
@@ -137,6 +171,38 @@ def provision_whatsapp_channel(
             channel_id=channel.id,
             http_status=502,
         ) from None
+
+    try:
+        resolved_client.configure_webhook(
+            instance_name=channel.instance_name,
+            url=webhook_url,
+            events=list(EVOLUTION_CHANNEL_WEBHOOK_EVENTS),
+            enabled=True,
+            webhook_by_events=False,
+            headers={
+                EVOLUTION_WEBHOOK_SECRET_HEADER: channel.webhook_secret,
+            },
+        )
+    except EvolutionAPIError as exc:
+        _raise_post_creation_error(
+            channel=channel,
+            client=resolved_client,
+            error_code=exc.error_code,
+            retryable=bool(exc.retryable),
+            http_status=_evolution_error_http_status(exc),
+            operation='configure_webhook',
+            exception_type=type(exc).__name__,
+        )
+    except Exception as exc:
+        _raise_post_creation_error(
+            channel=channel,
+            client=resolved_client,
+            error_code='EVOLUTION_WEBHOOK_CONFIGURATION_FAILED',
+            retryable=False,
+            http_status=502,
+            operation='configure_webhook',
+            exception_type=type(exc).__name__,
+        )
 
     try:
         instance_id, instance_token = _extract_safe_instance_credentials(response)
@@ -221,6 +287,22 @@ def _reserve_local_channel(
         for _ in range(MAX_INSTANCE_NAME_GENERATION_ATTEMPTS):
             instance_name = _generate_instance_name()
             try:
+                webhook_secret = generate_webhook_secret()
+            except Exception as exc:
+                logger.warning(
+                    'Falha ao gerar segredo individual do webhook',
+                    extra={
+                        'workspace_id': str(locked_workspace.id),
+                        'operation': 'generate_webhook_secret',
+                        'error_code': 'WEBHOOK_SECRET_GENERATION_FAILED',
+                        'exception_type': type(exc).__name__,
+                    },
+                )
+                raise WhatsAppChannelProvisioningError(
+                    error_code='WEBHOOK_SECRET_GENERATION_FAILED',
+                    http_status=500,
+                ) from None
+            try:
                 with transaction.atomic():
                     channel = WhatsAppChannel.objects.create(
                         workspace=locked_workspace,
@@ -229,7 +311,7 @@ def _reserve_local_channel(
                         instance_name=instance_name,
                         instance_id='',
                         instance_token='',
-                        webhook_secret='',
+                        webhook_secret=webhook_secret,
                         status=WhatsAppChannel.Status.PROVISIONING,
                         phone_number='',
                         connected_at=None,
@@ -330,6 +412,44 @@ def _raise_remote_provisioning_error(
         channel_id=channel.id,
         retryable=bool(exc.retryable),
         http_status=_evolution_error_http_status(exc),
+    ) from None
+
+
+def _raise_post_creation_error(
+    *,
+    channel: WhatsAppChannel,
+    client: BaseEvolutionClient,
+    error_code: str,
+    retryable: bool,
+    http_status: int,
+    operation: str,
+    exception_type: str,
+) -> None:
+    safe_error_code = _sanitize_error_code(error_code)
+    cleanup_attempted, cleanup_succeeded = _attempt_remote_cleanup(
+        client=client,
+        channel=channel,
+    )
+    _mark_channel_error_safely(channel=channel, error_code=safe_error_code)
+    logger.warning(
+        'Falha posterior a criacao da instancia Evolution',
+        extra={
+            'workspace_id': str(channel.workspace_id),
+            'channel_id': str(channel.id),
+            'instance_name': channel.instance_name,
+            'operation': operation,
+            'status': WhatsAppChannel.Status.ERROR,
+            'error_code': safe_error_code,
+            'exception_type': exception_type,
+            'remote_cleanup_attempted': cleanup_attempted,
+            'remote_cleanup_succeeded': cleanup_succeeded,
+        },
+    )
+    raise WhatsAppChannelProvisioningError(
+        error_code=safe_error_code,
+        channel_id=channel.id,
+        retryable=retryable,
+        http_status=http_status,
     ) from None
 
 

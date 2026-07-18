@@ -200,6 +200,7 @@ REST_FRAMEWORK = {
         'ai_provider_test_connection': '5/minute',
         'ai_provider_activation': '5/minute',
         'whatsapp_channel_provisioning': '3/minute',
+        'evolution_channel_webhook': '300/minute',
     },
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
@@ -231,6 +232,26 @@ EVOLUTION_API_URL = env('EVOLUTION_API_URL')
 EVOLUTION_API_KEY = env('EVOLUTION_API_KEY')
 EVOLUTION_INSTANCE_NAME = env('EVOLUTION_INSTANCE_NAME')
 EVOLUTION_API_TIMEOUT_SECONDS = env.int('EVOLUTION_API_TIMEOUT_SECONDS', default=30)
+EVOLUTION_WEBHOOK_PUBLIC_BASE_URL = env(
+    'EVOLUTION_WEBHOOK_PUBLIC_BASE_URL',
+    default='',
+)
+EVOLUTION_WEBHOOK_MAX_BODY_BYTES = env.int(
+    'EVOLUTION_WEBHOOK_MAX_BODY_BYTES',
+    default=524288,
+)
+EVOLUTION_WEBHOOK_DEDUP_TTL_SECONDS = env.int(
+    'EVOLUTION_WEBHOOK_DEDUP_TTL_SECONDS',
+    default=86400,
+)
+if EVOLUTION_WEBHOOK_MAX_BODY_BYTES <= 0:
+    raise ImproperlyConfigured(
+        'EVOLUTION_WEBHOOK_MAX_BODY_BYTES deve ser um inteiro positivo.',
+    )
+if EVOLUTION_WEBHOOK_DEDUP_TTL_SECONDS <= 0:
+    raise ImproperlyConfigured(
+        'EVOLUTION_WEBHOOK_DEDUP_TTL_SECONDS deve ser um inteiro positivo.',
+    )
 
 # Criptografia de campos sensiveis por tenant.
 FIELD_ENCRYPTION_KEY = required_env('FIELD_ENCRYPTION_KEY')

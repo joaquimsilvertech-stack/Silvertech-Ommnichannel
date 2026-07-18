@@ -23,6 +23,9 @@ os.environ.setdefault('CELERY_RESULT_BACKEND', 'redis://127.0.0.1:6379/0')
 os.environ.setdefault('EVOLUTION_API_URL', 'http://localhost:8080')
 os.environ.setdefault('EVOLUTION_API_KEY', 'test-evolution-key')
 os.environ.setdefault('EVOLUTION_INSTANCE_NAME', 'silvertech_whatsapp')
+os.environ.setdefault('EVOLUTION_WEBHOOK_PUBLIC_BASE_URL', 'https://webhook.test')
+os.environ.setdefault('EVOLUTION_WEBHOOK_MAX_BODY_BYTES', '524288')
+os.environ.setdefault('EVOLUTION_WEBHOOK_DEDUP_TTL_SECONDS', '86400')
 os.environ.setdefault('SENTRY_DSN', '')
 
 import pytest
@@ -42,6 +45,7 @@ def use_locmem_cache(settings):
             'LOCATION': 'test-cache',
         },
     }
+    settings.EVOLUTION_WEBHOOK_PUBLIC_BASE_URL = 'https://webhook.test'
 
 
 @pytest.fixture

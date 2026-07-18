@@ -135,11 +135,13 @@ def test_new_channel_is_reserved_with_explicit_safe_defaults(evolution_client: M
     assert result.remote_instance_created is True
     assert result.idempotent_reuse is False
     assert result.channel.name == 'WhatsApp principal'
+    assert isinstance(observed['webhook_secret'], str)
+    assert len(observed['webhook_secret']) >= 43
     assert observed == {
         'status': WhatsAppChannel.Status.PROVISIONING,
         'instance_id': '',
         'instance_token': '',
-        'webhook_secret': '',
+        'webhook_secret': observed['webhook_secret'],
         'phone_number': '',
         'last_error_code': '',
         'connected_at': None,
@@ -167,7 +169,24 @@ def test_create_instance_contract_and_successful_final_state(evolution_client: M
     assert channel.instance_id == 'remote-instance-id'
     assert channel.instance_token == 'remote-instance-token'
     assert channel.last_error_code == ''
-    assert channel.webhook_secret == ''
+    assert channel.webhook_secret
+    evolution_client.configure_webhook.assert_called_once_with(
+        instance_name=channel.instance_name,
+        url=(
+            'https://webhook.test/api/omnichannel/webhooks/evolution/'
+            f'{channel.webhook_public_id}/'
+        ),
+        events=[
+            'QRCODE_UPDATED',
+            'CONNECTION_UPDATE',
+            'MESSAGES_UPSERT',
+            'MESSAGES_UPDATE',
+            'SEND_MESSAGE',
+        ],
+        enabled=True,
+        webhook_by_events=False,
+        headers={'X-SilverTech-Webhook-Secret': channel.webhook_secret},
+    )
     assert channel.phone_number == ''
     assert channel.connected_at is None
     assert channel.last_connection_update_at is None
@@ -271,6 +290,7 @@ def test_same_normalized_name_reuses_channel_in_every_status_without_remote_call
         status=status_value,
         instance_id='preserved-id',
         instance_token='preserved-token',
+        webhook_secret='preserved-webhook-secret',
         last_error_code='PRESERVED_ERROR',
     )
 
@@ -288,8 +308,10 @@ def test_same_normalized_name_reuses_channel_in_every_status_without_remote_call
     assert existing.status == status_value
     assert existing.instance_id == 'preserved-id'
     assert existing.instance_token == 'preserved-token'
+    assert existing.webhook_secret == 'preserved-webhook-secret'
     assert existing.last_error_code == 'PRESERVED_ERROR'
     evolution_client.create_instance.assert_not_called()
+    evolution_client.configure_webhook.assert_not_called()
 
 
 def test_legacy_disconnected_channel_with_same_name_is_never_provisioned(
@@ -310,7 +332,9 @@ def test_legacy_disconnected_channel_with_same_name_is_never_provisioned(
     )
 
     assert result.channel.id == legacy.id
+    assert legacy.webhook_secret == ''
     evolution_client.create_instance.assert_not_called()
+    evolution_client.configure_webhook.assert_not_called()
 
 
 def test_different_names_create_distinct_channels(evolution_client: Mock) -> None:
@@ -557,7 +581,7 @@ def test_invalid_success_response_compensates_remote_instance(evolution_client: 
     )
 
 
-def test_no_webhook_qr_or_unrelated_evolution_operation_is_called(
+def test_webhook_is_configured_without_qr_or_unrelated_evolution_operations(
     evolution_client: Mock,
 ) -> None:
     provision_whatsapp_channel(
@@ -567,7 +591,7 @@ def test_no_webhook_qr_or_unrelated_evolution_operation_is_called(
     )
 
     evolution_client.create_instance.assert_called_once()
-    evolution_client.configure_webhook.assert_not_called()
+    evolution_client.configure_webhook.assert_called_once()
     evolution_client.get_qr_code.assert_not_called()
     evolution_client.get_connection_state.assert_not_called()
     evolution_client.restart_instance.assert_not_called()
@@ -622,6 +646,306 @@ def test_service_defensively_rejects_invalid_channel_names(
     evolution_client.create_instance.assert_not_called()
 
 
+def test_new_channels_receive_distinct_private_webhook_secrets(
+    evolution_client: Mock,
+) -> None:
+    workspace = WorkspaceFactory(
+        name='Tenant Secret Source',
+        slug='tenant-secret-source',
+    )
+
+    first = provision_whatsapp_channel(
+        workspace=workspace,
+        channel_name='Canal principal',
+        client=evolution_client,
+    ).channel
+    second = provision_whatsapp_channel(
+        workspace=workspace,
+        channel_name='Canal secundario',
+        client=evolution_client,
+    ).channel
+
+    assert first.webhook_secret != second.webhook_secret
+    for channel in (first, second):
+        assert len(channel.webhook_secret) >= 43
+        assert workspace.name.lower() not in channel.webhook_secret.lower()
+        assert workspace.slug.lower() not in channel.webhook_secret.lower()
+        assert channel.instance_name not in channel.webhook_secret
+        assert str(channel.webhook_public_id) not in channel.webhook_secret
+
+
+@pytest.mark.django_db(transaction=True)
+def test_secret_is_committed_before_external_calls_and_http_runs_outside_atomic() -> None:
+    workspace = WorkspaceFactory()
+    client = Mock(spec=BaseEvolutionClient)
+    operation_order: list[str] = []
+
+    def create_instance(**kwargs):
+        operation_order.append('create_instance')
+        assert connection.in_atomic_block is False
+        reserved = WhatsAppChannel.objects.get(instance_name=kwargs['instance_name'])
+        assert reserved.status == WhatsAppChannel.Status.PROVISIONING
+        assert reserved.webhook_secret
+        return _success_response()
+
+    def configure_webhook(**kwargs):
+        operation_order.append('configure_webhook')
+        assert connection.in_atomic_block is False
+        reserved = WhatsAppChannel.objects.get(instance_name=kwargs['instance_name'])
+        assert kwargs['headers'] == {
+            'X-SilverTech-Webhook-Secret': reserved.webhook_secret,
+        }
+        return {}
+
+    client.create_instance.side_effect = create_instance
+    client.configure_webhook.side_effect = configure_webhook
+
+    result = provision_whatsapp_channel(
+        workspace=workspace,
+        channel_name='Canal ordem segura',
+        client=client,
+    )
+
+    assert operation_order == ['create_instance', 'configure_webhook']
+    assert result.channel.status == WhatsAppChannel.Status.WAITING_QR
+
+
+def test_webhook_secret_is_encrypted_at_rest_and_distinct_from_instance_token(
+    evolution_client: Mock,
+) -> None:
+    channel = provision_whatsapp_channel(
+        workspace=WorkspaceFactory(),
+        channel_name='Canal segredo criptografado',
+        client=evolution_client,
+    ).channel
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT instance_token, webhook_secret '
+            'FROM omnichannel_whatsappchannel WHERE id = %s',
+            [str(channel.id)],
+        )
+        raw_values = cursor.fetchone()
+
+    assert raw_values is not None
+    serialized_raw_values = ' '.join(
+        value.decode('utf-8', errors='ignore')
+        if isinstance(value, bytes)
+        else str(value)
+        for value in raw_values
+        if value is not None
+    )
+    assert channel.webhook_secret
+    assert channel.instance_token == 'remote-instance-token'
+    assert channel.webhook_secret != channel.instance_token
+    assert channel.webhook_secret not in serialized_raw_values
+    assert channel.instance_token not in serialized_raw_values
+
+
+def test_configure_webhook_contract_uses_trusted_url_header_and_events(
+    evolution_client: Mock,
+    settings,
+) -> None:
+    settings.EVOLUTION_WEBHOOK_PUBLIC_BASE_URL = 'https://hooks.example.test/base/'
+
+    channel = provision_whatsapp_channel(
+        workspace=WorkspaceFactory(),
+        channel_name='Canal webhook configurado',
+        client=evolution_client,
+    ).channel
+
+    call = evolution_client.configure_webhook.call_args
+    assert call.kwargs == {
+        'instance_name': channel.instance_name,
+        'url': (
+            'https://hooks.example.test/base/api/omnichannel/webhooks/evolution/'
+            f'{channel.webhook_public_id}/'
+        ),
+        'events': [
+            'QRCODE_UPDATED',
+            'CONNECTION_UPDATE',
+            'MESSAGES_UPSERT',
+            'MESSAGES_UPDATE',
+            'SEND_MESSAGE',
+        ],
+        'enabled': True,
+        'webhook_by_events': False,
+        'headers': {'X-SilverTech-Webhook-Secret': channel.webhook_secret},
+    }
+    assert channel.webhook_secret not in call.kwargs['url']
+    assert '?' not in call.kwargs['url']
+
+
+@pytest.mark.parametrize(
+    ('configured_url', 'expected_error_code'),
+    [
+        ('', 'WEBHOOK_PUBLIC_BASE_URL_NOT_CONFIGURED'),
+        ('not-a-url', 'WEBHOOK_PUBLIC_BASE_URL_INVALID'),
+        ('ftp://hooks.example.test', 'WEBHOOK_PUBLIC_BASE_URL_INVALID'),
+        ('https://user:password@hooks.example.test', 'WEBHOOK_PUBLIC_BASE_URL_INVALID'),
+        ('https://hooks.example.test?secret=value', 'WEBHOOK_PUBLIC_BASE_URL_INVALID'),
+        ('https://hooks.example.test#fragment', 'WEBHOOK_PUBLIC_BASE_URL_INVALID'),
+        ('https://hooks.example.test/path with space', 'WEBHOOK_PUBLIC_BASE_URL_INVALID'),
+    ],
+)
+def test_invalid_public_webhook_url_stops_before_any_remote_call(
+    configured_url: str,
+    expected_error_code: str,
+    evolution_client: Mock,
+    settings,
+) -> None:
+    settings.EVOLUTION_WEBHOOK_PUBLIC_BASE_URL = configured_url
+
+    with pytest.raises(WhatsAppChannelProvisioningError) as exc_info:
+        provision_whatsapp_channel(
+            workspace=WorkspaceFactory(),
+            channel_name='Canal URL invalida',
+            client=evolution_client,
+        )
+
+    channel = WhatsAppChannel.objects.get(id=exc_info.value.channel_id)
+    assert channel.status == WhatsAppChannel.Status.ERROR
+    assert channel.last_error_code == expected_error_code
+    evolution_client.create_instance.assert_not_called()
+    evolution_client.configure_webhook.assert_not_called()
+    evolution_client.delete_instance.assert_not_called()
+
+
+def test_http_public_webhook_url_is_allowed_in_debug(
+    evolution_client: Mock,
+    settings,
+) -> None:
+    settings.DEBUG = True
+    settings.IS_PRODUCTION = False
+    settings.EVOLUTION_WEBHOOK_PUBLIC_BASE_URL = 'http://localhost:8000'
+
+    channel = provision_whatsapp_channel(
+        workspace=WorkspaceFactory(),
+        channel_name='Canal debug HTTP',
+        client=evolution_client,
+    ).channel
+
+    assert evolution_client.configure_webhook.call_args.kwargs['url'].startswith(
+        'http://localhost:8000/',
+    )
+    assert channel.status == WhatsAppChannel.Status.WAITING_QR
+
+
+def test_https_is_required_for_public_webhook_url_in_production(
+    evolution_client: Mock,
+    settings,
+) -> None:
+    settings.DEBUG = False
+    settings.IS_PRODUCTION = True
+    settings.EVOLUTION_WEBHOOK_PUBLIC_BASE_URL = 'http://hooks.example.test'
+
+    with pytest.raises(WhatsAppChannelProvisioningError) as exc_info:
+        provision_whatsapp_channel(
+            workspace=WorkspaceFactory(),
+            channel_name='Canal producao HTTP',
+            client=evolution_client,
+        )
+
+    channel = WhatsAppChannel.objects.get(id=exc_info.value.channel_id)
+    assert channel.last_error_code == 'WEBHOOK_PUBLIC_BASE_URL_HTTPS_REQUIRED'
+    evolution_client.create_instance.assert_not_called()
+    evolution_client.configure_webhook.assert_not_called()
+
+
+def test_configure_webhook_failure_marks_error_and_compensates_once(
+    evolution_client: Mock,
+) -> None:
+    evolution_client.configure_webhook.side_effect = EvolutionTimeoutError(
+        'private webhook failure',
+    )
+
+    with pytest.raises(WhatsAppChannelProvisioningError) as exc_info:
+        provision_whatsapp_channel(
+            workspace=WorkspaceFactory(),
+            channel_name='Canal falha webhook',
+            client=evolution_client,
+        )
+
+    channel = WhatsAppChannel.objects.get(id=exc_info.value.channel_id)
+    assert channel.status == WhatsAppChannel.Status.ERROR
+    assert channel.last_error_code == 'EVOLUTION_TIMEOUT'
+    assert exc_info.value.error_code == 'EVOLUTION_TIMEOUT'
+    assert exc_info.value.http_status == 504
+    evolution_client.create_instance.assert_called_once()
+    evolution_client.configure_webhook.assert_called_once()
+    evolution_client.delete_instance.assert_called_once_with(
+        instance_name=channel.instance_name,
+    )
+
+
+def test_generic_webhook_configuration_failure_uses_safe_code(
+    evolution_client: Mock,
+) -> None:
+    evolution_client.configure_webhook.side_effect = RuntimeError(
+        'secret=response-body-and-token',
+    )
+
+    with pytest.raises(WhatsAppChannelProvisioningError) as exc_info:
+        provision_whatsapp_channel(
+            workspace=WorkspaceFactory(),
+            channel_name='Canal erro generico webhook',
+            client=evolution_client,
+        )
+
+    channel = WhatsAppChannel.objects.get(id=exc_info.value.channel_id)
+    assert channel.last_error_code == 'EVOLUTION_WEBHOOK_CONFIGURATION_FAILED'
+    assert 'response' not in str(exc_info.value).lower()
+    evolution_client.delete_instance.assert_called_once()
+
+
+def test_webhook_cleanup_failure_does_not_hide_primary_error_or_log_secrets(
+    evolution_client: Mock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    evolution_client.configure_webhook.side_effect = EvolutionUnavailableError(
+        'private-webhook-response',
+    )
+    evolution_client.delete_instance.side_effect = EvolutionUnavailableError(
+        'private-cleanup-response',
+    )
+    caplog.set_level(logging.INFO, logger='omnichannel.whatsapp_channel_provisioning')
+
+    with pytest.raises(WhatsAppChannelProvisioningError) as exc_info:
+        provision_whatsapp_channel(
+            workspace=WorkspaceFactory(),
+            channel_name='Canal cleanup webhook',
+            client=evolution_client,
+        )
+
+    channel = WhatsAppChannel.objects.get(id=exc_info.value.channel_id)
+    assert exc_info.value.error_code == 'EVOLUTION_UNAVAILABLE'
+    assert channel.status == WhatsAppChannel.Status.ERROR
+    assert channel.webhook_secret not in caplog.text
+    assert 'private-webhook-response' not in caplog.text
+    assert 'private-cleanup-response' not in caplog.text
+    evolution_client.delete_instance.assert_called_once()
+
+
+def test_host_header_cannot_influence_configured_webhook_url(
+    evolution_client: Mock,
+    settings,
+) -> None:
+    settings.EVOLUTION_WEBHOOK_PUBLIC_BASE_URL = 'https://trusted.example.test'
+
+    channel = provision_whatsapp_channel(
+        workspace=WorkspaceFactory(),
+        channel_name='Canal host confiavel',
+        client=evolution_client,
+    ).channel
+
+    configured_url = evolution_client.configure_webhook.call_args.kwargs['url']
+    assert configured_url.startswith('https://trusted.example.test/')
+    assert str(channel.webhook_public_id) in configured_url
+    assert 'HTTP_HOST' not in inspect.getsource(
+        inspect.getmodule(provision_whatsapp_channel),
+    )
+
+
 def test_service_source_uses_locks_without_http_dependencies_or_celery() -> None:
     reserve_source = inspect.getsource(_reserve_local_channel)
     finalize_source = inspect.getsource(_finalize_local_channel)
@@ -635,4 +959,3 @@ def test_service_source_uses_locks_without_http_dependencies_or_celery() -> None
     assert '.delay(' not in module_source
     assert 'EVOLUTION_API_KEY' not in module_source
     assert 'EVOLUTION_INSTANCE_NAME' not in module_source
-
