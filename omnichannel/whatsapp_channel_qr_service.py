@@ -79,6 +79,18 @@ def get_whatsapp_channel_qr_code(
         _log_qr_result(channel=channel, source='cache', cache_hit=True)
         return _available_result(channel=channel, status=current_status, qr_code=cached_qr, source='cache')
 
+    status_before_remote = _get_current_status(channel)
+    if status_before_remote != WhatsAppChannel.Status.WAITING_QR:
+        if status_before_remote == WhatsAppChannel.Status.CONNECTED:
+            _delete_qr_best_effort(
+                channel=channel,
+                operation='delete_connected_residual_qr_before_fallback',
+            )
+        return _empty_result(
+            channel_id=channel.id,
+            status=status_before_remote or channel.status,
+        )
+
     try:
         resolved_client = client if client is not None else get_evolution_client()
         remote_response = resolved_client.get_qr_code(instance_name=channel.instance_name)

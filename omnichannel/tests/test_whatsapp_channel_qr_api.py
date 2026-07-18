@@ -414,7 +414,13 @@ def test_qr_logs_exclude_qr_phone_instance_and_external_error(caplog) -> None:
     assert instance not in rendered_logs
 
 
-def test_race_before_cache_write_never_returns_old_qr() -> None:
+@pytest.mark.parametrize(
+    'current_status',
+    [WhatsAppChannel.Status.CONNECTED, WhatsAppChannel.Status.DELETING],
+)
+def test_pre_fallback_race_skips_evolution_and_never_returns_qr(
+    current_status: str,
+) -> None:
     client, _, workspace = _member_client()
     channel = _sensitive_channel(workspace=workspace)
     evolution = _evolution_client()
@@ -422,18 +428,22 @@ def test_race_before_cache_write_never_returns_old_qr() -> None:
         patch(
             'omnichannel.whatsapp_channel_qr_service.get_evolution_client',
             return_value=evolution,
-        ),
+        ) as client_factory,
         patch(
             'omnichannel.whatsapp_channel_qr_service._get_current_status',
-            return_value=WhatsAppChannel.Status.CONNECTED,
+            return_value=current_status,
         ),
     ):
         response = client.get(_qr_url(workspace, channel))
 
-    assert response.json()['status'] == WhatsAppChannel.Status.CONNECTED
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()['status'] == current_status
     assert response.json()['has_qr_code'] is False
     assert RAW_QR not in response.content.decode()
     assert get_evolution_qr_code(channel.id) is None
+    client_factory.assert_not_called()
+    evolution.get_qr_code.assert_not_called()
+    _assert_safe_qr_headers(response)
 
 
 def test_race_after_cache_write_removes_qr_and_hides_response() -> None:
@@ -448,6 +458,7 @@ def test_race_after_cache_write_removes_qr_and_hides_response() -> None:
         patch(
             'omnichannel.whatsapp_channel_qr_service._get_current_status',
             side_effect=[
+                WhatsAppChannel.Status.WAITING_QR,
                 WhatsAppChannel.Status.WAITING_QR,
                 WhatsAppChannel.Status.CONNECTED,
             ],
