@@ -15,13 +15,35 @@ const ERROR_MESSAGES: Record<string, string> = {
   PROVIDER_UNAVAILABLE: "O provider esta indisponivel no momento.",
   PROVIDER_ERROR: "Nao foi possivel validar a credencial agora.",
   UNSUPPORTED_PROVIDER: "Este provider ainda nao esta disponivel no runtime.",
-  MISSING_API_KEY: "Informe uma chave antes de continuar."
+  MISSING_API_KEY: "Informe uma chave antes de continuar.",
+  QR_CACHE_UNAVAILABLE: "QR Code temporariamente indisponível. Tente novamente em instantes.",
+  EVOLUTION_TIMEOUT: "A conexão demorou para responder. Tente novamente.",
+  EVOLUTION_AUTHENTICATION_ERROR: "Não foi possível consultar a conexão agora.",
+  EVOLUTION_CONFIGURATION_ERROR: "Não foi possível consultar a conexão agora.",
+  EVOLUTION_CONNECTION_ERROR: "O serviço de conexão está temporariamente indisponível.",
+  EVOLUTION_UNAVAILABLE: "O serviço de conexão está temporariamente indisponível.",
+  EVOLUTION_RATE_LIMIT: "O serviço de conexão está temporariamente indisponível.",
+  EVOLUTION_INVALID_RESPONSE: "O serviço retornou uma resposta inválida.",
+  EVOLUTION_INVALID_REQUEST: "Não foi possível obter o QR Code.",
+  EVOLUTION_NOT_FOUND: "Não foi possível obter o QR Code.",
+  EVOLUTION_CONFLICT: "Não foi possível obter o QR Code.",
+  EVOLUTION_UNEXPECTED_RESPONSE: "Não foi possível obter o QR Code.",
+  EVOLUTION_REQUEST_ERROR: "Não foi possível obter o QR Code."
+};
+
+const HTTP_STATUS_MESSAGES: Record<number, string> = {
+  401: "Sua sessão expirou. Entre novamente.",
+  403: "Você não possui permissão para gerenciar os canais deste workspace.",
+  404: "Workspace ou canal não encontrado.",
+  429: "Muitas atualizações em pouco tempo. Aguarde alguns segundos."
 };
 
 function sanitizeText(value: unknown): string {
   if (typeof value !== "string") return "";
   return value
     .replace(/sk-[A-Za-z0-9_-]+/g, "[redacted]")
+    .replace(/Bearer\s+\S+/gi, "[redacted]")
+    .replace(/https?:\/\/\S+/gi, "[redacted]")
     .replace(/api_key/gi, "credencial")
     .replace(/authorization/gi, "autorizacao")
     .slice(0, 240);
@@ -78,7 +100,8 @@ export function normalizeApiError(error: unknown): NormalizedApiError {
     const normalized = payloadToError(response?.data);
     return {
       status: response?.status,
-      ...normalized
+      ...normalized,
+      message: normalizeHttpStatusMessage(response?.status, normalized)
     };
   }
 
@@ -86,7 +109,8 @@ export function normalizeApiError(error: unknown): NormalizedApiError {
     const normalized = payloadToError(error.response?.data);
     return {
       status: error.response?.status,
-      ...normalized
+      ...normalized,
+      message: normalizeHttpStatusMessage(error.response?.status, normalized)
     };
   }
 
@@ -101,4 +125,19 @@ export function normalizeApiError(error: unknown): NormalizedApiError {
     message: "Erro inesperado.",
     fieldErrors: {}
   };
+}
+
+function normalizeHttpStatusMessage(
+  status: number | undefined,
+  normalized: Pick<NormalizedApiError, "message" | "errorCode">
+): string {
+  if (!status) return normalized.message;
+  if (HTTP_STATUS_MESSAGES[status]) return HTTP_STATUS_MESSAGES[status];
+  if ([502, 503, 504].includes(status)) {
+    if (normalized.errorCode && ERROR_MESSAGES[normalized.errorCode]) {
+      return ERROR_MESSAGES[normalized.errorCode];
+    }
+    return "O serviço de conexão está temporariamente indisponível. Tente novamente.";
+  }
+  return normalized.message;
 }

@@ -528,6 +528,29 @@ Depois que a `output_message` existe, falhas da Evolution retryam apenas o envio
 
 Nenhuma credencial, payload bruto, header, resposta bruta da Evolution, prompt completo ou resposta completa da IA e armazenada ou logada nesse fluxo. Frontend, observabilidade avancada, retry manual e metricas de custo ficam para evolucoes futuras.
 
+### Frontend de conexao do WhatsApp
+
+A pagina `/workspaces/:workspaceId/settings/channels` permite que `OWNER` e
+`ADMIN` listem canais, criem uma conexao e acompanhem seu estado usando somente
+os endpoints SilverTech em `/api/workspaces/{workspace_id}/whatsapp-channels/`.
+O backend continua sendo a autoridade de autorizacao; membros `AGENT` recebem a
+interface de permissao negada e nenhum dado parcial e exibido.
+
+A listagem consulta o backend em intervalo moderado, e o painel acompanha o
+status local durante `provisioning`, `waiting_qr`, `connecting` e `reconnecting`.
+O QR e consultado somente em `waiting_qr`, no maximo a cada dez segundos. O
+frontend nunca chama a Evolution diretamente.
+
+O valor do QR existe apenas em memoria enquanto o painel esta aberto. A imagem e
+criada em uma Blob URL temporaria depois da validacao de MIME e magic bytes; a
+URL e revogada ao substituir o QR, mudar de estado, fechar ou desmontar o painel.
+A query sensivel tambem e cancelada e removida do TanStack Query. O QR nao e
+gravado em `localStorage`, `sessionStorage`, logs, URLs, arquivos ou analytics.
+
+Operacoes de lifecycle ainda nao possuem controles na interface. Restart,
+disconnect e delete serao implementados na Parte 30, depois dos respectivos
+contratos seguros de backend.
+
 Antes de deploy:
 
 ```bash

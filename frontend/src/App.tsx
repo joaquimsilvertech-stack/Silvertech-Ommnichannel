@@ -8,11 +8,13 @@ import {
   Plus,
   Robot,
   UsersThree,
-  WarningCircle
+  WarningCircle,
+  WhatsappLogo
 } from "@phosphor-icons/react";
 import { BrowserRouter, Link, Route, Routes } from "react-router-dom";
 import { Button } from "./components/Button";
 import { AIProviderSettingsPage } from "./components/ai/AIProviderSettingsPage";
+import { WhatsAppChannelSettingsPage } from "./components/whatsapp/WhatsAppChannelSettingsPage";
 import { LoginPanel } from "./components/LoginPanel";
 import { MetricCard } from "./components/MetricCard";
 import { Sidebar } from "./components/Sidebar";
@@ -189,18 +191,25 @@ function AppLayout() {
                 element={<ResourcePage<Workspace> title="Workspaces" description="Design aplicado à rota existente de workspaces." endpoint="/api/workspaces/workspaces/" icon={UsersThree} queryKey="workspaces" queryFn={getWorkspaces} columns={[
                   { header: "Nome", render: (item) => item.name },
                   { header: "Slug", render: (item) => item.slug },
-                  { header: "ID", render: (item) => item.id },
                   {
-                    header: "IA",
+                    header: "Configurações",
                     render: (item) => (
-                      <Link className="text-app-secondary hover:text-white" to={`/workspaces/${item.id}/settings/ai`}>
-                        Configurar IA
-                      </Link>
+                      <div className="flex flex-wrap gap-x-4 gap-y-2">
+                        <Link className="inline-flex items-center gap-1.5 text-app-secondary hover:text-white" to={`/workspaces/${item.id}/settings/ai`}>
+                          <Robot size={16} />
+                          Configurar IA
+                        </Link>
+                        <Link className="inline-flex items-center gap-1.5 text-app-secondary hover:text-white" to={`/workspaces/${item.id}/settings/channels`}>
+                          <WhatsappLogo size={16} />
+                          Configurar WhatsApp
+                        </Link>
+                      </div>
                     )
                   }
                 ]} />}
               />
               <Route path="/workspaces/:workspaceId/settings/ai" element={<AIProviderSettingsPage />} />
+              <Route path="/workspaces/:workspaceId/settings/channels" element={<WhatsAppChannelSettingsPage />} />
               <Route
                 path="/members"
                 element={<ResourcePage<Member> title="Membros" description="Design aplicado à rota existente de membros." endpoint="/api/workspaces/members/" icon={UsersThree} queryKey="members" queryFn={getMembers} columns={[
