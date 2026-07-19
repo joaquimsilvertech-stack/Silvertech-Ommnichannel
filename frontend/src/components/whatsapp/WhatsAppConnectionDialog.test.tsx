@@ -152,6 +152,72 @@ describe("WhatsAppConnectionDialog", () => {
     expect(screen.getByText("QR Code lido. Confirmando conexão.")).toBeInTheDocument();
   });
 
+  it("remove e revoga QR antigo depois de resposta concluida sem QR", async () => {
+    let currentQR = qrState();
+    hookMocks.qr.mockImplementation(() => currentQR);
+    const view = renderDialog();
+    await screen.findByRole("img", { name: "QR Code para conectar o WhatsApp" });
+
+    currentQR = qrState({
+      data: {
+        id: channel.id,
+        status: "waiting_qr",
+        has_qr_code: false,
+        qr_code: null,
+        format: null
+      },
+      isFetching: false
+    });
+    view.rerender(
+      <QueryClientProvider client={view.queryClient}>
+        <WhatsAppConnectionDialog {...view.props} />
+      </QueryClientProvider>
+    );
+
+    await waitFor(() => expect(imageMocks.revoke).toHaveBeenCalledWith("blob:secure-qr"));
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+    expect(screen.getByText("O QR Code ainda não está disponível.")).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(hookMocks.clear).not.toHaveBeenCalled();
+  });
+
+  it("preserva QR antigo durante loading e remove somente ao concluir sem QR", async () => {
+    let currentQR = qrState();
+    hookMocks.qr.mockImplementation(() => currentQR);
+    const view = renderDialog();
+    await screen.findByRole("img", { name: "QR Code para conectar o WhatsApp" });
+
+    const unavailableQR = {
+      id: channel.id,
+      status: "waiting_qr",
+      has_qr_code: false,
+      qr_code: null,
+      format: null
+    };
+    currentQR = qrState({ data: unavailableQR, isFetching: true });
+    view.rerender(
+      <QueryClientProvider client={view.queryClient}>
+        <WhatsAppConnectionDialog {...view.props} />
+      </QueryClientProvider>
+    );
+
+    expect(screen.getByRole("img", { name: "QR Code para conectar o WhatsApp" })).toHaveAttribute(
+      "src",
+      "blob:secure-qr"
+    );
+    expect(imageMocks.revoke).not.toHaveBeenCalled();
+
+    currentQR = qrState({ data: unavailableQR, isFetching: false });
+    view.rerender(
+      <QueryClientProvider client={view.queryClient}>
+        <WhatsAppConnectionDialog {...view.props} />
+      </QueryClientProvider>
+    );
+
+    await waitFor(() => expect(imageMocks.revoke).toHaveBeenCalledWith("blob:secure-qr"));
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+  });
+
   it("fecha com Escape, limpa QR e chama onClose", async () => {
     const user = userEvent.setup();
     const { props } = renderDialog();

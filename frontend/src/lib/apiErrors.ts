@@ -33,9 +33,9 @@ const ERROR_MESSAGES: Record<string, string> = {
 
 const HTTP_STATUS_MESSAGES: Record<number, string> = {
   401: "Sua sessão expirou. Entre novamente.",
-  403: "Você não possui permissão para gerenciar os canais deste workspace.",
-  404: "Workspace ou canal não encontrado.",
-  429: "Muitas atualizações em pouco tempo. Aguarde alguns segundos."
+  403: "Você não possui permissão para realizar esta ação.",
+  404: "Recurso não encontrado.",
+  429: "Muitas solicitações em pouco tempo. Aguarde alguns segundos."
 };
 
 function sanitizeText(value: unknown): string {
@@ -137,7 +137,7 @@ function normalizeHttpStatusMessage(
     if (normalized.errorCode && ERROR_MESSAGES[normalized.errorCode]) {
       return ERROR_MESSAGES[normalized.errorCode];
     }
-    return "O serviço de conexão está temporariamente indisponível. Tente novamente.";
+    return "O serviço está temporariamente indisponível. Tente novamente.";
   }
   return normalized.message;
 }

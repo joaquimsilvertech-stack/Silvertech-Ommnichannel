@@ -136,14 +136,16 @@ export function WhatsAppConnectionDialog({ channel, open, workspaceId, onClose }
 
   useEffect(() => {
     const qr = qrQuery.data;
-    if (
-      effectiveStatus !== "waiting_qr" ||
-      !qr?.has_qr_code ||
-      !qr.qr_code ||
-      !qr.format
-    ) {
+    if (effectiveStatus !== "waiting_qr" || qrQuery.isFetching) return;
+
+    if (qr && (!qr.has_qr_code || !qr.qr_code || !qr.format)) {
+      replaceObjectUrl(null);
+      setQrImageError(undefined);
       return;
     }
+
+    if (!qr?.has_qr_code || !qr.qr_code || !qr.format) return;
+
     try {
       const nextObjectUrl = createQRCodeObjectURL(qr.qr_code, qr.format);
       replaceObjectUrl(nextObjectUrl);
@@ -151,7 +153,7 @@ export function WhatsAppConnectionDialog({ channel, open, workspaceId, onClose }
     } catch {
       setQrImageError(QR_IMAGE_ERROR_MESSAGE);
     }
-  }, [effectiveStatus, qrQuery.data, replaceObjectUrl]);
+  }, [effectiveStatus, qrQuery.data, qrQuery.isFetching, replaceObjectUrl]);
 
   useEffect(() => {
     if (effectiveStatus === "waiting_qr") return;

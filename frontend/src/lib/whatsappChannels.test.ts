@@ -89,6 +89,7 @@ describe("whatsappChannels API client", () => {
 
   it.each([
     [403, "Você não possui permissão para gerenciar os canais deste workspace."],
+    [404, "Workspace ou canal não encontrado."],
     [429, "Muitas atualizações em pouco tempo. Aguarde alguns segundos."]
   ])("normaliza status HTTP %s", async (status, message) => {
     vi.spyOn(api, "get").mockRejectedValueOnce({ response: { status, data: {} } });
@@ -96,6 +97,17 @@ describe("whatsappChannels API client", () => {
     expect(error).toBeInstanceOf(WhatsAppChannelApiError);
     expect(error.normalized.status).toBe(status);
     expect(error.message).toBe(message);
+  });
+
+  it("usa fallback especifico em indisponibilidade sem codigo conhecido", async () => {
+    vi.spyOn(api, "get").mockRejectedValueOnce({
+      response: { status: 503, data: {} }
+    });
+    const error = await getWhatsAppChannels("workspace-1").catch((value) => value);
+    expect(error).toBeInstanceOf(WhatsAppChannelApiError);
+    expect(error.message).toBe(
+      "O serviço de conexão está temporariamente indisponível. Tente novamente."
+    );
   });
 
   it("normaliza erro de QR sem expor corpo remoto", async () => {

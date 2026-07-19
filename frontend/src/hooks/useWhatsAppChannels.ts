@@ -14,15 +14,27 @@ import {
   getWhatsAppChannelStatus,
   type CreateWhatsAppChannelInput,
   type WhatsAppChannel,
-  type WhatsAppChannelConnectionStatus
+  type WhatsAppChannelConnectionStatus,
+  type WhatsAppChannelQRCode
 } from "../lib/whatsappChannels";
 
 export const WHATSAPP_CHANNEL_LIST_POLL_MS = 5_000;
 export const WHATSAPP_CHANNEL_STATUS_POLL_MS = 3_000;
 export const WHATSAPP_CHANNEL_QR_POLL_MS = 10_000;
 
+export function whatsappChannelQRCodeRefetchInterval(
+  query: Query<WhatsAppChannelQRCode, Error>
+) {
+  if (query.state.error) return false;
+
+  const status = query.state.data?.status;
+  if (status && status !== "waiting_qr") return false;
+
+  return WHATSAPP_CHANNEL_QR_POLL_MS;
+}
+
 export const whatsappChannelQRCodeQueryBehavior = {
-  refetchInterval: WHATSAPP_CHANNEL_QR_POLL_MS,
+  refetchInterval: whatsappChannelQRCodeRefetchInterval,
   refetchIntervalInBackground: false,
   refetchOnWindowFocus: false,
   retry: false,

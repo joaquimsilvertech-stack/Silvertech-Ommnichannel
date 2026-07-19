@@ -27,6 +27,7 @@ import {
   useWhatsAppChannels,
   whatsappChannelQRCodeQueryBehavior,
   whatsappChannelQRCodeQueryKey,
+  whatsappChannelQRCodeRefetchInterval,
   whatsappChannelsQueryKey,
   whatsappChannelStatusQueryKey,
   whatsappChannelStatusRefetchInterval,
@@ -42,6 +43,15 @@ function createHarness() {
     return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
   }
   return { queryClient, Wrapper };
+}
+
+function qrRefetchInterval(status?: string, error: unknown = null) {
+  return whatsappChannelQRCodeRefetchInterval({
+    state: {
+      data: status ? { status } : undefined,
+      error
+    }
+  } as never);
 }
 
 describe("WhatsApp channel query hooks", () => {
@@ -95,7 +105,38 @@ describe("WhatsApp channel query hooks", () => {
     expect(query?.options.gcTime).toBe(0);
     expect(whatsappChannelQRCodeQueryBehavior.retry).toBe(false);
     expect(whatsappChannelQRCodeQueryBehavior.refetchOnWindowFocus).toBe(false);
-    expect(whatsappChannelQRCodeQueryBehavior.refetchInterval).toBe(WHATSAPP_CHANNEL_QR_POLL_MS);
+    expect(whatsappChannelQRCodeQueryBehavior.refetchInterval).toBe(
+      whatsappChannelQRCodeRefetchInterval
+    );
+    expect(qrRefetchInterval()).toBe(WHATSAPP_CHANNEL_QR_POLL_MS);
+    expect(60_000 / WHATSAPP_CHANNEL_QR_POLL_MS).toBeLessThan(10);
+  });
+
+  it("mantem polling de QR em waiting_qr sem erro", () => {
+    expect(qrRefetchInterval("waiting_qr")).toBe(WHATSAPP_CHANNEL_QR_POLL_MS);
+  });
+
+  it.each(["connected", "connecting", "error"])(
+    "para polling de QR quando resposta informa %s",
+    (status) => {
+      expect(qrRefetchInterval(status)).toBe(false);
+    }
+  );
+
+  it.each([401, 403, 404, 429, 502, 503, 504])(
+    "para polling de QR depois do erro HTTP %s",
+    (status) => {
+      expect(qrRefetchInterval("waiting_qr", { response: { status, data: {} } })).toBe(false);
+    }
+  );
+
+  it("para polling de QR depois de erro de rede", () => {
+    expect(qrRefetchInterval("waiting_qr", new Error("Network Error"))).toBe(false);
+  });
+
+  it("retoma intervalo normal depois de tentativa manual bem-sucedida", () => {
+    expect(qrRefetchInterval("waiting_qr", new Error("Network Error"))).toBe(false);
+    expect(qrRefetchInterval("waiting_qr")).toBe(WHATSAPP_CHANNEL_QR_POLL_MS);
   });
 
   it.each(["provisioning", "waiting_qr", "connecting", "reconnecting"])(

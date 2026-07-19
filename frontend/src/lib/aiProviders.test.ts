@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "./api";
 import {
   activateAIProvider,
+  AIProviderApiError,
   createAIProvider,
   deactivateAIProvider,
   getAIProviders,
@@ -144,5 +145,33 @@ describe("aiProviders API client", () => {
 
     expect(error.message).toBe("Informe uma chave antes de continuar.");
     expect(error.errorCode).toBe("MISSING_API_KEY");
+  });
+
+  it("erro 403 de IA nao menciona canais WhatsApp", async () => {
+    vi.spyOn(api, "get").mockRejectedValueOnce({
+      response: { status: 403, data: {} }
+    });
+
+    const error = await getAIProviders("workspace-1").catch((value) => value);
+    expect(error).toBeInstanceOf(AIProviderApiError);
+    expect(error.message).toBe(
+      "Você não possui permissão para realizar esta ação."
+    );
+    expect(error.message.toLocaleLowerCase("pt-BR")).not.toContain("canal");
+    expect(error.message.toLocaleLowerCase("pt-BR")).not.toContain("whatsapp");
+  });
+
+  it("erro 503 de IA usa fallback generico", async () => {
+    vi.spyOn(api, "get").mockRejectedValueOnce({
+      response: { status: 503, data: {} }
+    });
+
+    const error = await getAIProviders("workspace-1").catch((value) => value);
+    expect(error).toBeInstanceOf(AIProviderApiError);
+    expect(error.message).toBe(
+      "O serviço está temporariamente indisponível. Tente novamente."
+    );
+    expect(error.message.toLocaleLowerCase("pt-BR")).not.toContain("conexão");
+    expect(error.message.toLocaleLowerCase("pt-BR")).not.toContain("qr");
   });
 });

@@ -46,11 +46,56 @@ export type CreateWhatsAppChannelInput = {
   name: string;
 };
 
+const WHATSAPP_HTTP_STATUS_MESSAGES: Record<number, string> = {
+  401: "Sua sessão expirou. Entre novamente.",
+  403: "Você não possui permissão para gerenciar os canais deste workspace.",
+  404: "Workspace ou canal não encontrado.",
+  429: "Muitas atualizações em pouco tempo. Aguarde alguns segundos."
+};
+
+const KNOWN_WHATSAPP_ERROR_CODES = new Set([
+  "QR_CACHE_UNAVAILABLE",
+  "EVOLUTION_TIMEOUT",
+  "EVOLUTION_AUTHENTICATION_ERROR",
+  "EVOLUTION_CONFIGURATION_ERROR",
+  "EVOLUTION_CONNECTION_ERROR",
+  "EVOLUTION_UNAVAILABLE",
+  "EVOLUTION_RATE_LIMIT",
+  "EVOLUTION_INVALID_RESPONSE",
+  "EVOLUTION_INVALID_REQUEST",
+  "EVOLUTION_NOT_FOUND",
+  "EVOLUTION_CONFLICT",
+  "EVOLUTION_UNEXPECTED_RESPONSE",
+  "EVOLUTION_REQUEST_ERROR"
+]);
+
+export function normalizeWhatsAppChannelApiError(error: unknown): NormalizedApiError {
+  const normalized = normalizeApiError(error);
+  const status = normalized.status ?? 0;
+  const statusMessage = WHATSAPP_HTTP_STATUS_MESSAGES[status];
+
+  if (statusMessage) {
+    return { ...normalized, message: statusMessage };
+  }
+
+  if (
+    [502, 503, 504].includes(status) &&
+    !KNOWN_WHATSAPP_ERROR_CODES.has(normalized.errorCode ?? "")
+  ) {
+    return {
+      ...normalized,
+      message: "O serviço de conexão está temporariamente indisponível. Tente novamente."
+    };
+  }
+
+  return normalized;
+}
+
 export class WhatsAppChannelApiError extends Error {
   normalized: NormalizedApiError;
 
   constructor(error: unknown) {
-    const normalized = normalizeApiError(error);
+    const normalized = normalizeWhatsAppChannelApiError(error);
     super(normalized.message);
     this.name = "WhatsAppChannelApiError";
     this.normalized = normalized;
