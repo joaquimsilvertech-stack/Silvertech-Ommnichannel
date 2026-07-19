@@ -438,11 +438,29 @@ banco, eventstream, logs ou observabilidade. Eventos de conexao atualizam os
 estados `WAITING_QR`, `CONNECTING`, `CONNECTED`, `RECONNECTING`, `DISCONNECTED` e
 `ERROR`; QR e connecting atrasados nao rebaixam um canal conectado.
 
-Mensagens inbound textuais criam ou reutilizam `Contact` no Workspace do canal e
-uma `Conversation` aberta vinculada ao proprio `WhatsAppChannel`. A `Message`
-recebe `external_id` e uma `provider_message_key` SHA-256 composta pelo provider,
-ID tecnico do canal e ID externo. O agendamento de IA continua ocorrendo apenas
-em `transaction.on_commit`, preservando handoff e as regras atuais.
+Mensagens inbound textuais derivam o Workspace exclusivamente do
+`WhatsAppChannel` bloqueado. A identidade WhatsApp de `Contact` e
+`workspace + channel_id`, e `channel_id` recebe o telefone normalizado. Uma
+constraint condicional impede identidades nao vazias duplicadas no mesmo
+Workspace; contatos legados livres podem ser reivindicados, e uma corrida e
+recuperada pelo vencedor da constraint depois de `IntegrityError`. Nenhum
+Contact e global entre Workspaces.
+
+O mesmo Contact pode participar de varios canais do mesmo Workspace, mas cada
+canal usa sua propria `Conversation` aberta com o `WhatsAppChannel` exato.
+Conversas de outro canal, fechadas ou legadas com `whatsapp_channel=null` nao sao
+reutilizadas. Campos `workspace_id` e `instance` do payload nao controlam o
+roteamento. A `Message` recebe `external_id` e uma `provider_message_key` SHA-256
+composta pelo provider, ID tecnico do canal e ID externo.
+
+Inbound direta exige `fromMe` booleano igual a `false`. Grupos, broadcast,
+newsletter e sufixos desconhecidos sao ignorados; JIDs `@lid` exigem
+`remoteJidAlt` individual em `@s.whatsapp.net` ou `@c.us`. Nomes recebidos sao
+validados e atualizam apenas placeholders, sem substituir nomes curados por um
+operador. Logs usam somente IDs tecnicos e codigos seguros, sem telefone, JID,
+nome, corpo ou payload. O agendamento de IA continua em `transaction.on_commit`,
+preservando handoff e idempotencia. A Parte 26 migrara o outbound para a
+instancia especifica da Conversation.
 
 O Redis continua sendo a primeira deduplicacao da entrada. O PostgreSQL mantem
 um `EvolutionWebhookEvent` por canal e chave hashada para idempotencia duravel,
@@ -454,7 +472,7 @@ Atualizacoes outbound sao localizadas somente dentro do Workspace e canal da
 conversa. As transicoes sao monotonicas de `PENDING` para `SENT`, `DELIVERED` e
 `READ`; falhas tardias nao rebaixam mensagens entregues ou lidas. O roteamento
 outbound ainda usa `EVOLUTION_INSTANCE_NAME`. A Parte 23 expoe QR/status, a Parte
-25 concluira o hardening inbound e a Parte 26 migrara o outbound para a instancia
+25 endurece o roteamento inbound e a Parte 26 migrara o outbound para a instancia
 do canal.
 
 ### API de canais, QR Code e conexao

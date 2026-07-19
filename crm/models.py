@@ -54,6 +54,16 @@ class Contact(BaseModel):
             models.Index(fields=['workspace']),
             models.Index(fields=('workspace', 'name')),
         ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['workspace', 'channel_id'],
+                condition=(
+                    models.Q(channel_id__isnull=False)
+                    & ~models.Q(channel_id='')
+                ),
+                name='crm_contact_unique_ws_channel_id',
+            ),
+        ]
 
     def __str__(self) -> str:
         return self.name

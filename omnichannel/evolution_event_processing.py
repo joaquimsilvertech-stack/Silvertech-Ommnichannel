@@ -14,13 +14,13 @@ from django.conf import settings
 from django.db import DatabaseError, IntegrityError, transaction
 from django.utils import timezone
 
-from crm.models import Contact
 from omnichannel.evolution_qr_cache import (
     EvolutionQRCodeCacheError,
     delete_evolution_qr_code,
     extract_evolution_qr_code,
     store_evolution_qr_code,
 )
+from omnichannel.inbound_routing import resolve_inbound_whatsapp_route
 from omnichannel.models import (
     Conversation,
     EvolutionWebhookEvent,
@@ -85,7 +85,8 @@ _STATUS_RANK = {
 _SAFE_EXTERNAL_REASON = re.compile(r'^[A-Za-z][A-Za-z0-9_.-]{0,63}$')
 _SAFE_TIMESTAMP = re.compile(r'^[0-9TZ:+.\-]{1,64}$')
 _PHONE_PATTERN = re.compile(r'^\d{8,20}$')
-_INDIVIDUAL_JID_SUFFIXES = {'s.whatsapp.net', 'c.us', 'lid'}
+_DIRECT_INDIVIDUAL_JID_SUFFIXES = {'s.whatsapp.net', 'c.us'}
+_INDIVIDUAL_JID_SUFFIXES = {*_DIRECT_INDIVIDUAL_JID_SUFFIXES, 'lid'}
 
 
 class EvolutionEventProcessingError(Exception):
@@ -595,43 +596,13 @@ def _create_inbound_message(
             )
             return
 
-        contact = (
-            Contact.objects.select_for_update()
-            .filter(workspace_id=locked_channel.workspace_id, phone=parsed.phone)
-            .order_by('created_at')
-            .first()
+        route = resolve_inbound_whatsapp_route(
+            channel=locked_channel,
+            phone=parsed.phone,
+            contact_name=parsed.contact_name,
         )
-        if contact is None:
-            contact = Contact.objects.create(
-                workspace_id=locked_channel.workspace_id,
-                phone=parsed.phone,
-                name=parsed.contact_name,
-                channel_id=parsed.phone,
-            )
-        elif parsed.contact_name != parsed.phone and contact.name != parsed.contact_name:
-            contact.name = parsed.contact_name
-            contact.save(update_fields=['name', 'updated_at'])
-
-        conversation = (
-            Conversation.objects.select_for_update()
-            .filter(
-                workspace_id=locked_channel.workspace_id,
-                contact=contact,
-                channel='whatsapp',
-                whatsapp_channel=locked_channel,
-                status=Conversation.Status.OPEN,
-            )
-            .order_by('created_at')
-            .first()
-        )
-        if conversation is None:
-            conversation = Conversation.objects.create(
-                workspace_id=locked_channel.workspace_id,
-                contact=contact,
-                channel='whatsapp',
-                whatsapp_channel=locked_channel,
-                status=Conversation.Status.OPEN,
-            )
+        contact = route.contact
+        conversation = route.conversation
 
         try:
             with transaction.atomic():
@@ -654,7 +625,7 @@ def _create_inbound_message(
             raise
 
         handle_inbound_ai_scheduling(
-            workspace=channel.workspace,
+            workspace=locked_channel.workspace,
             conversation=conversation,
             message=message,
             remote_jid=parsed.remote_jid,
@@ -671,6 +642,7 @@ def _create_inbound_message(
         'Mensagem inbound Evolution processada',
         extra={
             **_event_log_context(event, status=EvolutionWebhookEvent.Status.PROCESSED),
+            'contact_id': str(contact.id),
             'message_id': str(message.id),
             'conversation_id': str(conversation.id),
         },
@@ -961,22 +933,32 @@ def _parse_inbound_message(
     external_id = _validate_external_id(key.get('id'))
     if external_id is None:
         return None, 'INVALID_EXTERNAL_ID'
-    if key.get('fromMe') is True:
+    from_me = key.get('fromMe')
+    if from_me is True:
         return None, 'MESSAGE_FROM_ME'
+    if from_me is not False:
+        return None, 'INVALID_FROM_ME'
 
     remote_jid_value = key.get('remoteJid')
-    if not isinstance(remote_jid_value, str) or not _safe_text_value(remote_jid_value, 255):
+    jid_parts = _validated_jid_parts(remote_jid_value)
+    if jid_parts is None:
         return None, 'INVALID_REMOTE_JID'
-    if remote_jid_value.endswith('@g.us'):
+    _, remote_jid_suffix = jid_parts
+    if remote_jid_suffix == 'g.us':
         return None, 'UNSUPPORTED_GROUP_MESSAGE'
 
-    phone_jid = remote_jid_value
-    if remote_jid_value.endswith('@lid'):
-        alternate = key.get('remoteJidAlt') or item.get('remoteJidAlt')
-        if not isinstance(alternate, str):
+    if remote_jid_suffix == 'lid':
+        if _normalize_phone_jid(remote_jid_value) is None:
             return None, 'INVALID_REMOTE_JID'
-        phone_jid = alternate
-    phone = _normalize_phone_jid(phone_jid)
+        alternate = key.get('remoteJidAlt')
+        if alternate is None:
+            alternate = item.get('remoteJidAlt')
+        phone = _normalize_direct_phone_jid(alternate)
+    elif remote_jid_suffix in _DIRECT_INDIVIDUAL_JID_SUFFIXES:
+        phone = _normalize_direct_phone_jid(remote_jid_value)
+    else:
+        return None, 'UNSUPPORTED_REMOTE_JID'
+
     if phone is None:
         return None, 'INVALID_REMOTE_JID'
 
@@ -1132,6 +1114,28 @@ def _normalize_phone_jid(value: object) -> str | None:
         return None
     local = local.split(':', maxsplit=1)[0].lstrip('+')
     return local if _PHONE_PATTERN.fullmatch(local) else None
+
+
+def _normalize_direct_phone_jid(value: object) -> str | None:
+    parts = _validated_jid_parts(value)
+    if parts is None:
+        return None
+    local, suffix = parts
+    if suffix not in _DIRECT_INDIVIDUAL_JID_SUFFIXES:
+        return None
+    normalized_local = local.split(':', maxsplit=1)[0].lstrip('+')
+    return normalized_local if _PHONE_PATTERN.fullmatch(normalized_local) else None
+
+
+def _validated_jid_parts(value: object) -> tuple[str, str] | None:
+    if not isinstance(value, str) or not _safe_text_value(value, 255):
+        return None
+    if value != value.strip() or value.count('@') != 1:
+        return None
+    local, suffix = value.rsplit('@', maxsplit=1)
+    if not local or not suffix:
+        return None
+    return local, suffix
 
 
 def _safe_text_value(value: str, max_length: int) -> bool:
