@@ -36,6 +36,7 @@ from omnichannel.evolution.endpoints import (
     SEND_TEXT_PATH,
     SET_WEBHOOK_PATH,
 )
+from omnichannel.models import WhatsAppChannel
 
 
 class StubResponse:
@@ -628,46 +629,63 @@ def test_factory_builds_client_from_settings_without_instance_name() -> None:
 
 
 @override_settings(EVOLUTION_INSTANCE_NAME='legacy-global-instance')
-def test_legacy_wrapper_delegates_to_client_and_returns_response() -> None:
+def test_channel_wrapper_delegates_with_persisted_instance_and_returns_response() -> None:
     client = Mock()
     client.send_text.return_value = {'key': {'id': 'message-id'}}
+    channel = WhatsAppChannel(
+        instance_name='channel-instance',
+        instance_token='private-token-must-not-be-used',
+    )
 
     with patch('omnichannel.services.get_evolution_client', return_value=client) as factory:
-        result = services.send_whatsapp_message('5511999999999', 'Mensagem legada')
+        result = services.send_whatsapp_message(
+            channel=channel,
+            phone='5511999999999',
+            text='Mensagem roteada',
+        )
 
     assert result == {'key': {'id': 'message-id'}}
     factory.assert_called_once_with()
     client.send_text.assert_called_once_with(
-        instance_name='legacy-global-instance',
+        instance_name='channel-instance',
         number='5511999999999',
-        text='Mensagem legada',
+        text='Mensagem roteada',
     )
+    assert 'private-token-must-not-be-used' not in str(client.send_text.call_args)
+    assert 'legacy-global-instance' not in str(client.send_text.call_args)
 
 
-def test_legacy_wrapper_keeps_public_signature_and_has_no_direct_http_or_channel_lookup() -> None:
+def test_channel_wrapper_has_explicit_signature_and_no_direct_http_or_global_instance() -> None:
     signature = inspect.signature(services.send_whatsapp_message)
     source = inspect.getsource(services.send_whatsapp_message)
 
-    assert list(signature.parameters) == ['phone', 'text']
+    assert list(signature.parameters) == ['channel', 'phone', 'text']
+    assert all(parameter.kind is inspect.Parameter.KEYWORD_ONLY for parameter in signature.parameters.values())
     assert signature.return_annotation == 'dict[str, Any]'
     assert 'requests.' not in source
-    assert 'WhatsAppChannel' not in source
     assert 'Conversation' not in source
     assert 'EVOLUTION_API_URL' not in source
     assert 'EVOLUTION_API_KEY' not in source
-    assert 'settings.EVOLUTION_INSTANCE_NAME' in source
+    assert 'EVOLUTION_INSTANCE_NAME' not in source
+    assert 'channel.instance_name' in source
+    assert 'instance_token' not in source
+    assert 'get_evolution_client()' in source
 
 
-@override_settings(
-    EVOLUTION_INSTANCE_NAME='',
-    EVOLUTION_API_KEY='api-key-must-not-leak',
-)
-def test_legacy_wrapper_rejects_missing_instance_with_safe_configuration_error() -> None:
+def test_channel_wrapper_propagates_typed_evolution_exception() -> None:
+    channel = WhatsAppChannel(instance_name='channel-instance')
+    client = Mock()
+    client.send_text.side_effect = EvolutionConfigurationError(operation='send_text')
+
     with (
-        patch('omnichannel.services.get_evolution_client') as factory,
+        patch('omnichannel.services.get_evolution_client', return_value=client),
         pytest.raises(EvolutionConfigurationError) as exc_info,
     ):
-        services.send_whatsapp_message('5511999999999', 'Mensagem')
+        services.send_whatsapp_message(
+            channel=channel,
+            phone='5511999999999',
+            text='Mensagem',
+        )
 
-    factory.assert_not_called()
-    assert 'api-key-must-not-leak' not in str(exc_info.value)
+    assert exc_info.value.operation == 'send_text'
+    assert 'channel-instance' not in str(exc_info.value)

@@ -7,8 +7,18 @@ import pytest
 
 from crm.models import Contact
 from omnichannel.evolution import EvolutionAPIError
-from omnichannel.factories import ConversationFactory, MessageFactory
-from omnichannel.models import AIObservabilityEvent, AIProcessingRun, Conversation, Message
+from omnichannel.factories import (
+    ConversationFactory,
+    MessageFactory,
+    WhatsAppChannelFactory,
+)
+from omnichannel.models import (
+    AIObservabilityEvent,
+    AIProcessingRun,
+    Conversation,
+    Message,
+    WhatsAppChannel,
+)
 from omnichannel.services import process_whatsapp_payload
 from omnichannel.tasks import process_ai_response, send_outbound_whatsapp_message
 from tests.security_helpers import (
@@ -192,12 +202,18 @@ def test_send_outbound_whatsapp_message_ignores_invalid_inbound_and_non_pending(
 
 @pytest.mark.django_db
 def test_send_outbound_failure_logs_do_not_expose_body_or_phone(caplog) -> None:
+    channel = WhatsAppChannelFactory(status=WhatsAppChannel.Status.CONNECTED)
+    conversation = ConversationFactory(
+        workspace=channel.workspace,
+        whatsapp_channel=channel,
+        contact__phone='5511777777777',
+    )
     message = MessageFactory(
+        conversation=conversation,
         direction=Message.Direction.OUTBOUND,
         status=Message.Status.PENDING,
         send_attempt_count=2,
         body='Mensagem outbound secreta',
-        conversation__contact__phone='5511777777777',
     )
     caplog.set_level(logging.WARNING)
 

@@ -295,8 +295,9 @@ canal que preserva a compatibilidade com conversas antigas.
 Tokens da instancia, segredos do webhook e numeros de telefone sao armazenados
 em campos criptografados. QR Code nao e persistido. O provisionamento de novos
 canais e feito pelo endpoint administrativo descrito abaixo, enquanto o fluxo
-legado da Evolution continua usando temporariamente a configuracao global
-existente.
+outbound moderno usa a instancia persistida no canal da conversa. A configuracao
+global de instancia permanece somente para compatibilidade com fluxos legados
+fora desse caminho.
 
 A migracao da instancia global para o modelo de canais e uma operacao explicita:
 nao existe migration automatica nem tentativa de localizar um Workspace por nome.
@@ -328,9 +329,10 @@ ligado ao runtime existente.
 
 O client faz exatamente uma tentativa por operacao e nao possui retry interno.
 O retry do envio outbound continua sob controle da task Celery, com os mesmos
-estados e backoff. `send_whatsapp_message` permanece como wrapper compativel e
-continua escolhendo a instancia por `EVOLUTION_INSTANCE_NAME`; o roteamento por
-`WhatsAppChannel` ainda nao foi ativado.
+estados e backoff. `send_whatsapp_message` recebe explicitamente o
+`WhatsAppChannel` validado e envia por `channel.instance_name`; ele nao consulta
+`EVOLUTION_INSTANCE_NAME`. A factory `get_evolution_client` continua usando URL,
+API key e timeout globais, sem resolver instancia ou tenant.
 
 O adapter nao persiste QR Code ou qualquer resposta, nao provisiona instancias,
 nao configura webhooks automaticamente e nao registra payloads, telefones,
@@ -365,9 +367,9 @@ tenta remover a instancia remota uma unica vez, sem apagar o canal local.
 
 O endpoint nao retorna nem persiste QR Code. Para canais novos, o webhook seguro
 por canal e configurado automaticamente depois da criacao da instancia; o canal
-so chega a `WAITING_QR` quando as duas operacoes externas terminam. Inbound e
-outbound continuam no roteamento legado, incluindo o uso temporario de
-`EVOLUTION_INSTANCE_NAME`. A configuracao
+so chega a `WAITING_QR` quando as duas operacoes externas terminam. O outbound
+moderno resolve a instancia pelo canal persistido na `Conversation`, sem fallback
+para `EVOLUTION_INSTANCE_NAME`. A configuracao
 `CONFIG_SESSION_PHONE_VERSION=2.3000.1041652166` permanece inalterada. Operacoes
 reais, sobretudo as destrutivas, devem usar exclusivamente uma instancia de
 teste da Evolution.
@@ -459,8 +461,8 @@ newsletter e sufixos desconhecidos sao ignorados; JIDs `@lid` exigem
 validados e atualizam apenas placeholders, sem substituir nomes curados por um
 operador. Logs usam somente IDs tecnicos e codigos seguros, sem telefone, JID,
 nome, corpo ou payload. O agendamento de IA continua em `transaction.on_commit`,
-preservando handoff e idempotencia. A Parte 26 migrara o outbound para a
-instancia especifica da Conversation.
+preservando handoff e idempotencia. A task de delivery recebe apenas os IDs da
+mensagem e do canal esperado; nenhum token ou nome de instancia entra na fila.
 
 O Redis continua sendo a primeira deduplicacao da entrada. O PostgreSQL mantem
 um `EvolutionWebhookEvent` por canal e chave hashada para idempotencia duravel,
@@ -471,9 +473,9 @@ como `IGNORED` sem efeitos de dominio.
 Atualizacoes outbound sao localizadas somente dentro do Workspace e canal da
 conversa. As transicoes sao monotonicas de `PENDING` para `SENT`, `DELIVERED` e
 `READ`; falhas tardias nao rebaixam mensagens entregues ou lidas. O roteamento
-outbound ainda usa `EVOLUTION_INSTANCE_NAME`. A Parte 23 expoe QR/status, a Parte
-25 endurece o roteamento inbound e a Parte 26 migrara o outbound para a instancia
-do canal.
+outbound usa exclusivamente o `WhatsAppChannel` da conversa. A Parte 23 expoe
+QR/status, a Parte 25 endurece o roteamento inbound e a Parte 26 fixa o outbound
+na instancia do canal.
 
 ### API de canais, QR Code e conexao
 
@@ -507,8 +509,34 @@ O QR permanece no cache por `EVOLUTION_QR_TTL_SECONDS` (120 segundos por padrao)
 nunca no banco, e todas as respostas administrativas usam `no-store`. O frontend
 nao deve salvar o QR em `localStorage`, session storage ou qualquer persistencia;
 deve descarta-lo assim que o status deixar `WAITING_QR`. A Parte 24 implementara
-a interface. O webhook legado permanece disponivel e o outbound continua usando
-temporariamente `EVOLUTION_INSTANCE_NAME`.
+a interface. O webhook legado permanece disponivel; o outbound moderno nao usa a
+instancia global.
+
+### Roteamento outbound por canal
+
+Toda `Message` outbound entregue pela task segue a relacao persistida
+`Message -> Conversation -> WhatsAppChannel`. O ID de canal recebido pela task e
+apenas uma expectativa de integridade: ele precisa coincidir exatamente com
+`conversation.whatsapp_channel_id` e nunca e usado para buscar ou redirecionar o
+envio. Chamadas legadas contendo apenas `message_id` continuam aceitas, mas derivam
+o canal da conversa e carregam esse mesmo ID nos retries seguintes.
+
+Somente canais `CONNECTED`, do provider Evolution e do mesmo Workspace da
+conversa podem chamar `send_text`. `PROVISIONING`, `WAITING_QR`, `CONNECTING` e
+`RECONNECTING` mantem a mesma `Message` como `PENDING` e usam o backoff da task.
+`DISCONNECTED`, `ERROR`, `DELETING`, estados desconhecidos, divergencias de
+Workspace, Contact ou canal falham fechados sem chamada externa. Nao existe
+fallback para `EVOLUTION_INSTANCE_NAME` nem selecao do primeiro canal do tenant.
+
+O destinatario vem exclusivamente do `Contact` da conversa e a instancia vem de
+`WhatsAppChannel.instance_name`. `instance_token` nao e descriptografado para o
+envio, nao entra nos argumentos Celery e nao e registrado. Em sucesso, a mesma
+mensagem recebe `external_id` quando disponivel e passa para `SENT`; `DELIVERED` e
+`READ` continuam sendo aplicados somente pelos webhooks escopados ao mesmo canal.
+Um retry nunca regenera IA, cria outra mensagem ou troca silenciosamente de
+canal. Logs registram apenas IDs tecnicos, tentativas, status, codigos seguros e
+latencia, sem telefone, corpo, instancia ou credenciais. O smoke test real da
+Evolution sera executado posteriormente em ambiente controlado.
 
 ## Blocos frontend de IA
 

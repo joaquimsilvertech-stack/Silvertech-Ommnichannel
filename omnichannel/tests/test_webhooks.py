@@ -411,4 +411,4 @@ def test_duplicate_ai_task_for_webhook_source_message_creates_single_response(
     ).count() == 1
     mock_registry.assert_called_once()
     mock_evolution.assert_not_called()
-    mock_delivery_delay.assert_called_once_with(str(first_result))
+    mock_delivery_delay.assert_called_once_with(str(first_result), None)

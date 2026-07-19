@@ -7,7 +7,6 @@ import logging
 import re
 from typing import Any
 
-from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -40,7 +39,13 @@ from .evolution import (
     EvolutionUnavailableError,
     get_evolution_client,
 )
-from .models import AIObservabilityEvent, AIProcessingRun, Conversation, Message
+from .models import (
+    AIObservabilityEvent,
+    AIProcessingRun,
+    Conversation,
+    Message,
+    WhatsAppChannel,
+)
 from .observability import record_ai_observability_event_safe
 
 logger = logging.getLogger(__name__)
@@ -1067,15 +1072,16 @@ def process_whatsapp_payload(payload: dict[str, Any], workspace_id: str) -> None
     logger.info('Evento Evolution ignorado: %s', event)
 
 
-def send_whatsapp_message(phone: str, text: str) -> dict[str, Any]:
-    """Envia texto pelo adapter central usando a instancia global legada."""
-    instance_name = settings.EVOLUTION_INSTANCE_NAME
-    if not isinstance(instance_name, str) or not instance_name.strip():
-        raise EvolutionConfigurationError(operation='send_whatsapp_message')
-
+def send_whatsapp_message(
+    *,
+    channel: WhatsAppChannel,
+    phone: str,
+    text: str,
+) -> dict[str, Any]:
+    """Envia texto pelo client central usando a instancia persistida do canal."""
     client = get_evolution_client()
     return client.send_text(
-        instance_name=instance_name,
+        instance_name=channel.instance_name,
         number=phone,
         text=text,
     )

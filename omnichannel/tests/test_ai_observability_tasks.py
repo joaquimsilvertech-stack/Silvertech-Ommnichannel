@@ -8,8 +8,12 @@ from celery.exceptions import Retry
 from omnichannel.ai.exceptions import AIProviderAuthenticationError, AIProviderTimeoutError
 from omnichannel.ai.types import AIProviderResult
 from omnichannel.evolution import EvolutionTimeoutError
-from omnichannel.factories import ConversationFactory, MessageFactory
-from omnichannel.models import AIObservabilityEvent, AIProcessingRun, Message
+from omnichannel.factories import (
+    ConversationFactory,
+    MessageFactory,
+    WhatsAppChannelFactory,
+)
+from omnichannel.models import AIObservabilityEvent, AIProcessingRun, Message, WhatsAppChannel
 from omnichannel.tasks import process_ai_response, send_outbound_whatsapp_message
 from workspaces.factories import WorkspaceAIProviderConfigFactory
 from workspaces.models import AIProvider
@@ -28,6 +32,22 @@ def _adapter(result_text: str = 'Resposta observavel.'):
 
 def _run_on_commit_immediately(callback, using=None, robust=False):
     callback()
+
+
+def _delivery_message(*, send_attempt_count: int = 0) -> Message:
+    channel = WhatsAppChannelFactory(status=WhatsAppChannel.Status.CONNECTED)
+    conversation = ConversationFactory(
+        workspace=channel.workspace,
+        whatsapp_channel=channel,
+        contact__phone='5511999999999',
+    )
+    return MessageFactory(
+        conversation=conversation,
+        direction=Message.Direction.OUTBOUND,
+        status=Message.Status.PENDING,
+        body='Texto outbound sensivel.',
+        send_attempt_count=send_attempt_count,
+    )
 
 
 @pytest.mark.django_db
@@ -122,12 +142,7 @@ def test_process_ai_response_final_failure_creates_failed_event() -> None:
 
 @pytest.mark.django_db
 def test_delivery_success_creates_attempt_and_success_events() -> None:
-    message = MessageFactory(
-        direction=Message.Direction.OUTBOUND,
-        status=Message.Status.PENDING,
-        body='Texto outbound sensivel.',
-        conversation__contact__phone='5511999999999',
-    )
+    message = _delivery_message()
 
     with patch(
         'omnichannel.services.send_whatsapp_message',
@@ -144,10 +159,7 @@ def test_delivery_success_creates_attempt_and_success_events() -> None:
 
 @pytest.mark.django_db
 def test_delivery_retryable_error_creates_retrying_event() -> None:
-    message = MessageFactory(
-        direction=Message.Direction.OUTBOUND,
-        status=Message.Status.PENDING,
-    )
+    message = _delivery_message()
 
     with (
         patch('omnichannel.services.send_whatsapp_message', side_effect=EvolutionTimeoutError()),
@@ -166,11 +178,7 @@ def test_delivery_retryable_error_creates_retrying_event() -> None:
 
 @pytest.mark.django_db
 def test_delivery_final_failure_creates_failed_event() -> None:
-    message = MessageFactory(
-        direction=Message.Direction.OUTBOUND,
-        status=Message.Status.PENDING,
-        send_attempt_count=2,
-    )
+    message = _delivery_message(send_attempt_count=2)
 
     with patch(
         'omnichannel.services.send_whatsapp_message',

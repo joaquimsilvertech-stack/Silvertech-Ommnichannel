@@ -530,11 +530,12 @@ def test_simulated_failure_rolls_back_channel_creation_and_associations() -> Non
     ).exists()
 
 
-def test_operational_migration_keeps_legacy_runtime_and_has_no_external_calls() -> None:
+def test_operational_migration_has_no_external_calls_or_outbound_global_fallback() -> None:
     migration_source = inspect.getsource(migration_service)
     legacy_send_source = inspect.getsource(send_whatsapp_message)
 
     assert 'EVOLUTION_API_KEY' not in migration_source
     assert 'requests.' not in migration_source
     assert '.delay(' not in migration_source
-    assert 'settings.EVOLUTION_INSTANCE_NAME' in legacy_send_source
+    assert 'EVOLUTION_INSTANCE_NAME' not in legacy_send_source
+    assert 'channel.instance_name' in legacy_send_source

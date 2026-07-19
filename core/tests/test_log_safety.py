@@ -12,6 +12,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from omnichannel.evolution import EvolutionUnavailableError
+from omnichannel.models import WhatsAppChannel
 from omnichannel.services import send_whatsapp_message
 from workspaces.views import send_invite_email
 
@@ -65,17 +66,24 @@ def test_evolution_failure_logs_safe_metadata_without_response_body_or_phone(
     settings.EVOLUTION_INSTANCE_NAME = 'silvertech_whatsapp'
     sensitive_response = 'SENSITIVE_EVOLUTION_RESPONSE_456'
     sensitive_phone = '+5561999999999'
+    sensitive_instance = 'SENSITIVE_CHANNEL_INSTANCE_789'
+    channel = WhatsAppChannel(instance_name=sensitive_instance)
 
     response = requests.Response()
     response.status_code = 502
     response._content = sensitive_response.encode()
-    response.url = 'http://evolution.local/message/sendText/silvertech_whatsapp'
+    response.url = f'http://evolution.local/message/sendText/{sensitive_instance}'
     with patch('requests.sessions.Session.request', return_value=response):
         with pytest.raises(EvolutionUnavailableError):
-            send_whatsapp_message(sensitive_phone, 'Mensagem sem logar payload')
+            send_whatsapp_message(
+                channel=channel,
+                phone=sensitive_phone,
+                text='Mensagem sem logar payload',
+            )
 
     assert sensitive_response not in caplog.text
     assert sensitive_phone not in caplog.text
+    assert sensitive_instance not in caplog.text
     assert 'Mensagem sem logar payload' not in caplog.text
 
     error_record = next(

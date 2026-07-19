@@ -188,6 +188,7 @@ def process_ai_response(
         conversation = Conversation.objects.select_related(
             'contact',
             'workspace',
+            'whatsapp_channel',
         ).get(id=conversation_id)
     except Conversation.DoesNotExist:
         return None
@@ -500,7 +501,11 @@ def process_ai_response(
                 output_message=message,
             )
         transaction.on_commit(
-            lambda message_id=str(message.id): send_outbound_whatsapp_message.delay(message_id),
+            lambda message_id=str(message.id), channel_id=(
+                str(conversation.whatsapp_channel_id)
+                if conversation.whatsapp_channel_id is not None
+                else None
+            ): send_outbound_whatsapp_message.delay(message_id, channel_id),
         )
 
     record_ai_observability_event_safe(
@@ -531,24 +536,29 @@ def process_ai_response(
     name='omnichannel.send_outbound_whatsapp_message',
     max_retries=MAX_OUTBOUND_DELIVERY_ATTEMPTS,
 )
-def send_outbound_whatsapp_message(self, message_id: str) -> str | None:
+def send_outbound_whatsapp_message(
+    self,
+    message_id: str,
+    whatsapp_channel_id: str | None = None,
+) -> str | None:
     """Entrega uma Message OUTBOUND existente pela Evolution com retry isolado."""
+    from django.core.exceptions import ValidationError
+
+    from omnichannel.evolution import EvolutionAPIError
     from omnichannel.models import AIObservabilityEvent, Message
     from omnichannel.observability import (
         calculate_latency_ms,
         record_ai_observability_event_safe,
     )
+    from omnichannel.outbound_routing import (
+        OutboundWhatsAppRoutingError,
+        resolve_outbound_whatsapp_route,
+    )
     from omnichannel.services import (
-        OUTBOUND_RETRY_BASE_SECONDS,
-        calculate_exponential_backoff,
-        can_retry_message_delivery,
         extract_evolution_message_external_id,
-        is_retryable_evolution_error,
         map_evolution_exception_to_error_code,
-        mark_message_as_failed,
         mark_message_as_sent,
         mark_message_delivery_attempt_started,
-        mark_message_delivery_retrying,
         send_whatsapp_message,
     )
 
@@ -557,8 +567,9 @@ def send_outbound_whatsapp_message(self, message_id: str) -> str | None:
             'conversation',
             'conversation__contact',
             'conversation__workspace',
+            'conversation__whatsapp_channel',
         ).get(id=message_id)
-    except Message.DoesNotExist:
+    except (Message.DoesNotExist, TypeError, ValueError, ValidationError):
         return None
 
     if message.direction != Message.Direction.OUTBOUND:
@@ -571,6 +582,12 @@ def send_outbound_whatsapp_message(self, message_id: str) -> str | None:
         return None
 
     message = mark_message_delivery_attempt_started(message=message)
+    persisted_channel_id = message.conversation.whatsapp_channel_id
+    expected_channel_id = (
+        str(whatsapp_channel_id)
+        if whatsapp_channel_id is not None
+        else str(persisted_channel_id) if persisted_channel_id is not None else None
+    )
     record_ai_observability_event_safe(
         workspace=message.conversation.workspace,
         event_type=AIObservabilityEvent.EventType.OUTBOUND_DELIVERY_ATTEMPT,
@@ -586,77 +603,53 @@ def send_outbound_whatsapp_message(self, message_id: str) -> str | None:
     delivery_started_at = perf_counter()
 
     try:
+        route = resolve_outbound_whatsapp_route(
+            message=message,
+            expected_channel_id=expected_channel_id,
+        )
+    except OutboundWhatsAppRoutingError as exc:
+        return _handle_outbound_delivery_failure(
+            task=self,
+            message=message,
+            exc=exc,
+            error_code=exc.error_code,
+            retryable=exc.retryable,
+            expected_channel_id=(
+                str(persisted_channel_id)
+                if persisted_channel_id is not None
+                else None
+            ),
+            delivery_started_at=delivery_started_at,
+        )
+
+    expected_channel_id = str(route.channel.id)
+    try:
         evolution_response = send_whatsapp_message(
-            message.conversation.contact.phone,
-            message.body,
+            channel=route.channel,
+            phone=route.recipient,
+            text=message.body,
         )
         external_id = extract_evolution_message_external_id(evolution_response)
-    except Exception as exc:
-        error_code = map_evolution_exception_to_error_code(exc)
-        retryable = is_retryable_evolution_error(exc)
-        if retryable and can_retry_message_delivery(message=message):
-            countdown = calculate_exponential_backoff(
-                message.send_attempt_count,
-                base_seconds=OUTBOUND_RETRY_BASE_SECONDS,
-            )
-            next_retry_at = timezone.now() + timedelta(seconds=countdown)
-            message = mark_message_delivery_retrying(
-                message=message,
-                error_code=error_code,
-                next_retry_at=next_retry_at,
-            )
-            record_ai_observability_event_safe(
-                workspace=message.conversation.workspace,
-                event_type=AIObservabilityEvent.EventType.OUTBOUND_DELIVERY_RETRYING,
-                status=AIObservabilityEvent.Status.RETRYING,
-                conversation=message.conversation,
-                output_message=message,
-                error_code=error_code,
-                latency_ms=calculate_latency_ms(delivery_started_at),
-                attempt_count=message.send_attempt_count,
-                metadata={
-                    'source': 'outbound_delivery',
-                    'retry_countdown': countdown,
-                    'is_retryable': True,
-                    'delivery_status': message.status,
-                },
-            )
-            _log_message_send_failure(
-                conversation=message.conversation,
-                message=message,
-                error_code=error_code,
-                exc=exc,
-                status='retrying',
-                retry_countdown=countdown,
-                attempt_count=message.send_attempt_count,
-            )
-            raise self.retry(exc=exc, countdown=countdown)
-
-        message = mark_message_as_failed(message=message, error_code=error_code)
-        record_ai_observability_event_safe(
-            workspace=message.conversation.workspace,
-            event_type=AIObservabilityEvent.EventType.OUTBOUND_DELIVERY_FAILED,
-            status=AIObservabilityEvent.Status.FAILED,
-            conversation=message.conversation,
-            output_message=message,
-            error_code=error_code,
-            latency_ms=calculate_latency_ms(delivery_started_at),
-            attempt_count=message.send_attempt_count,
-            metadata={
-                'source': 'outbound_delivery',
-                'is_retryable': retryable,
-                'delivery_status': message.status,
-            },
-        )
-        _log_message_send_failure(
-            conversation=message.conversation,
+    except EvolutionAPIError as exc:
+        return _handle_outbound_delivery_failure(
+            task=self,
             message=message,
-            error_code=error_code,
             exc=exc,
-            status='failed',
-            attempt_count=message.send_attempt_count,
+            error_code=map_evolution_exception_to_error_code(exc),
+            retryable=bool(exc.retryable),
+            expected_channel_id=expected_channel_id,
+            delivery_started_at=delivery_started_at,
         )
-        return str(message.id)
+    except Exception as exc:
+        return _handle_outbound_delivery_failure(
+            task=self,
+            message=message,
+            exc=exc,
+            error_code=map_evolution_exception_to_error_code(exc),
+            retryable=False,
+            expected_channel_id=expected_channel_id,
+            delivery_started_at=delivery_started_at,
+        )
 
     message = mark_message_as_sent(message=message, external_id=external_id)
     record_ai_observability_event_safe(
@@ -671,6 +664,113 @@ def send_outbound_whatsapp_message(self, message_id: str) -> str | None:
             'source': 'outbound_delivery',
             'delivery_status': message.status,
         },
+    )
+    logger.info(
+        'Mensagem outbound enviada pela Evolution API',
+        extra={
+            'workspace_id': str(message.conversation.workspace_id),
+            'conversation_id': str(message.conversation_id),
+            'message_id': str(message.id),
+            'whatsapp_channel_id': str(route.channel.id),
+            'attempt_count': message.send_attempt_count,
+            'status': message.status,
+            'latency_ms': calculate_latency_ms(delivery_started_at),
+        },
+    )
+    return str(message.id)
+
+
+def _handle_outbound_delivery_failure(
+    *,
+    task,
+    message,
+    exc: Exception,
+    error_code: str,
+    retryable: bool,
+    expected_channel_id: str | None,
+    delivery_started_at: float,
+) -> str:
+    from omnichannel.models import AIObservabilityEvent
+    from omnichannel.observability import (
+        calculate_latency_ms,
+        record_ai_observability_event_safe,
+    )
+    from omnichannel.services import (
+        OUTBOUND_RETRY_BASE_SECONDS,
+        calculate_exponential_backoff,
+        can_retry_message_delivery,
+        mark_message_as_failed,
+        mark_message_delivery_retrying,
+    )
+
+    if retryable and can_retry_message_delivery(message=message):
+        countdown = calculate_exponential_backoff(
+            message.send_attempt_count,
+            base_seconds=OUTBOUND_RETRY_BASE_SECONDS,
+        )
+        next_retry_at = timezone.now() + timedelta(seconds=countdown)
+        message = mark_message_delivery_retrying(
+            message=message,
+            error_code=error_code,
+            next_retry_at=next_retry_at,
+        )
+        record_ai_observability_event_safe(
+            workspace=message.conversation.workspace,
+            event_type=AIObservabilityEvent.EventType.OUTBOUND_DELIVERY_RETRYING,
+            status=AIObservabilityEvent.Status.RETRYING,
+            conversation=message.conversation,
+            output_message=message,
+            error_code=error_code,
+            latency_ms=calculate_latency_ms(delivery_started_at),
+            attempt_count=message.send_attempt_count,
+            metadata={
+                'source': 'outbound_delivery',
+                'retry_countdown': countdown,
+                'is_retryable': True,
+                'delivery_status': message.status,
+            },
+        )
+        _log_message_send_failure(
+            conversation=message.conversation,
+            message=message,
+            whatsapp_channel_id=expected_channel_id,
+            error_code=error_code,
+            exc=exc,
+            status='retrying',
+            retry_countdown=countdown,
+            attempt_count=message.send_attempt_count,
+        )
+        retry_args = (str(message.id), expected_channel_id)
+        raise task.retry(
+            args=retry_args,
+            exc=exc,
+            countdown=countdown,
+        )
+
+    message = mark_message_as_failed(message=message, error_code=error_code)
+    record_ai_observability_event_safe(
+        workspace=message.conversation.workspace,
+        event_type=AIObservabilityEvent.EventType.OUTBOUND_DELIVERY_FAILED,
+        status=AIObservabilityEvent.Status.FAILED,
+        conversation=message.conversation,
+        output_message=message,
+        error_code=error_code,
+        latency_ms=calculate_latency_ms(delivery_started_at),
+        attempt_count=message.send_attempt_count,
+        metadata={
+            'source': 'outbound_delivery',
+            'is_retryable': retryable,
+            'delivery_status': message.status,
+        },
+    )
+    _log_message_send_failure(
+        conversation=message.conversation,
+        message=message,
+        whatsapp_channel_id=expected_channel_id,
+        error_code=error_code,
+        exc=exc,
+        status='failed',
+        attempt_count=message.send_attempt_count,
     )
     return str(message.id)
 
@@ -727,6 +827,7 @@ def _log_message_send_failure(
     *,
     conversation,
     message,
+    whatsapp_channel_id: str | None,
     error_code: str,
     exc: Exception,
     status: str,
@@ -739,6 +840,7 @@ def _log_message_send_failure(
             'workspace_id': str(conversation.workspace_id),
             'conversation_id': str(conversation.id),
             'message_id': str(message.id),
+            'whatsapp_channel_id': str(whatsapp_channel_id or ''),
             'status': status,
             'error_code': error_code,
             'attempt_count': attempt_count,

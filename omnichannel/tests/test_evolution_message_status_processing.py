@@ -11,7 +11,8 @@ from omnichannel.evolution_event_processing import (
     process_evolution_channel_event,
 )
 from omnichannel.factories import ConversationFactory, MessageFactory, WhatsAppChannelFactory
-from omnichannel.models import EvolutionWebhookEvent, Message
+from omnichannel.models import EvolutionWebhookEvent, Message, WhatsAppChannel
+from omnichannel.tasks import send_outbound_whatsapp_message
 
 pytestmark = pytest.mark.django_db
 
@@ -327,3 +328,51 @@ def test_status_processing_never_calls_ai_evolution_or_http() -> None:
     ai_task.assert_not_called()
     evolution_send.assert_not_called()
     request.assert_not_called()
+
+
+def test_sent_message_status_remains_scoped_to_the_sending_channel() -> None:
+    channel_a = WhatsAppChannelFactory(
+        status=WhatsAppChannel.Status.CONNECTED,
+        instance_name='status-channel-a',
+    )
+    channel_b = WhatsAppChannelFactory(
+        workspace=channel_a.workspace,
+        status=WhatsAppChannel.Status.CONNECTED,
+        instance_name='status-channel-b',
+    )
+    conversation = ConversationFactory(
+        workspace=channel_a.workspace,
+        whatsapp_channel=channel_a,
+        contact__phone='5511999999999',
+    )
+    message = MessageFactory(
+        conversation=conversation,
+        direction=Message.Direction.OUTBOUND,
+        status=Message.Status.PENDING,
+        external_id=None,
+    )
+
+    with patch(
+        'omnichannel.services.send_whatsapp_message',
+        return_value={'key': {'id': 'shared-external-id'}},
+    ) as evolution_send:
+        send_outbound_whatsapp_message.run(str(message.id), str(channel_a.id))
+
+    message.refresh_from_db()
+    assert message.status == Message.Status.SENT
+    assert message.external_id == 'shared-external-id'
+    assert evolution_send.call_args.kwargs['channel'].id == channel_a.id
+
+    process_evolution_channel_event(
+        channel=channel_a,
+        payload=_payload('shared-external-id', 'DELIVERED'),
+    )
+    message.refresh_from_db()
+    assert message.status == Message.Status.DELIVERED
+
+    process_evolution_channel_event(
+        channel=channel_b,
+        payload=_payload('shared-external-id', 'READ'),
+    )
+    message.refresh_from_db()
+    assert message.status == Message.Status.DELIVERED

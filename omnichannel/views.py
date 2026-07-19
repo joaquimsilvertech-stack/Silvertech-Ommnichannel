@@ -15,7 +15,7 @@ from rest_framework.views import APIView
 from crm.mixins import WorkspaceScopedQuerysetMixin
 from crm.pagination import CRMCursorPagination
 
-from .models import Conversation, Message
+from .models import Conversation, Message, WhatsAppChannel
 from .evolution import EvolutionAPIError
 from .observability import (
     DEFAULT_RECENT_EVENTS_LIMIT,
@@ -158,7 +158,7 @@ class ConversationViewSet(WorkspaceScopedQuerysetMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        return queryset.select_related('contact', 'workspace')
+        return queryset.select_related('contact', 'workspace', 'whatsapp_channel')
 
     @action(detail=True, methods=['get'])
     def messages(self, request: Request, pk: str | None = None) -> Response:
@@ -192,8 +192,24 @@ class ConversationViewSet(WorkspaceScopedQuerysetMixin, viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        channel = conversation.whatsapp_channel
+        if (
+            channel is None
+            or channel.workspace_id != conversation.workspace_id
+            or channel.provider != WhatsAppChannel.Provider.EVOLUTION
+            or channel.status != WhatsAppChannel.Status.CONNECTED
+        ):
+            return Response(
+                {'detail': 'Canal WhatsApp indisponivel para envio.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
         try:
-            evolution_response = send_whatsapp_message(phone, body)
+            evolution_response = send_whatsapp_message(
+                channel=channel,
+                phone=phone,
+                text=body,
+            )
         except EvolutionAPIError:
             return Response(
                 {'detail': 'Falha ao enviar mensagem via WhatsApp.'},

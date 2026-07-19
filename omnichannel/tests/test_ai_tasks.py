@@ -15,8 +15,12 @@ from omnichannel.ai.exceptions import (
     AIProviderTimeoutError,
 )
 from omnichannel.ai.types import AIProviderResult
-from omnichannel.factories import ConversationFactory, MessageFactory
-from omnichannel.models import AIProcessingRun, Message
+from omnichannel.factories import (
+    ConversationFactory,
+    MessageFactory,
+    WhatsAppChannelFactory,
+)
+from omnichannel.models import AIProcessingRun, Message, WhatsAppChannel
 from omnichannel.tasks import process_ai_response
 from workspaces.factories import WorkspaceAIProviderConfigFactory
 from workspaces.models import AIProvider
@@ -39,7 +43,12 @@ def _run_on_commit_immediately(callback, using=None, robust=False):
 
 @pytest.mark.django_db
 def test_process_ai_response_creates_outbound_message_and_schedules_delivery() -> None:
-    conversation = ConversationFactory(contact__phone='5511999999999')
+    channel = WhatsAppChannelFactory(status=WhatsAppChannel.Status.CONNECTED)
+    conversation = ConversationFactory(
+        workspace=channel.workspace,
+        whatsapp_channel=channel,
+        contact__phone='5511999999999',
+    )
     provider_config = WorkspaceAIProviderConfigFactory(
         workspace=conversation.workspace,
         api_key='sk-workspace-key',
@@ -80,12 +89,17 @@ def test_process_ai_response_creates_outbound_message_and_schedules_delivery() -
         settings={'temperature': 0.2},
     )
     mock_send_whatsapp.assert_not_called()
-    mock_delivery_delay.assert_called_once_with(str(message.id))
+    mock_delivery_delay.assert_called_once_with(str(message.id), str(channel.id))
 
 
 @pytest.mark.django_db
 def test_process_ai_response_accepts_valid_source_message_id() -> None:
-    conversation = ConversationFactory(contact__phone='5511999999999')
+    channel = WhatsAppChannelFactory(status=WhatsAppChannel.Status.CONNECTED)
+    conversation = ConversationFactory(
+        workspace=channel.workspace,
+        whatsapp_channel=channel,
+        contact__phone='5511999999999',
+    )
     WorkspaceAIProviderConfigFactory(
         workspace=conversation.workspace,
         api_key='sk-source-message-key',
@@ -118,7 +132,7 @@ def test_process_ai_response_accepts_valid_source_message_id() -> None:
     assert str(run.output_message_id) == message_id
     mock_registry.assert_called_once()
     mock_send_whatsapp.assert_not_called()
-    mock_delivery_delay.assert_called_once_with(str(message.id))
+    mock_delivery_delay.assert_called_once_with(str(message.id), str(channel.id))
 
 
 @pytest.mark.django_db
@@ -142,7 +156,7 @@ def test_process_ai_response_leaves_external_id_empty_until_delivery() -> None:
     assert message.status == Message.Status.PENDING
     assert message.external_id is None
     assert message.send_error_code == ''
-    mock_delivery_delay.assert_called_once_with(str(message.id))
+    mock_delivery_delay.assert_called_once_with(str(message.id), None)
 
 
 @pytest.mark.django_db
@@ -187,7 +201,7 @@ def test_process_ai_response_duplicate_source_message_does_not_create_second_res
     ).count() == 1
     assert AIProcessingRun.objects.filter(source_message=inbound).count() == 1
     first_send.assert_not_called()
-    first_delivery_delay.assert_called_once_with(str(first_message_id))
+    first_delivery_delay.assert_called_once_with(str(first_message_id), None)
     second_registry.assert_not_called()
     second_send.assert_not_called()
 
@@ -238,7 +252,7 @@ def test_process_ai_response_never_sends_evolution_directly(
         direction=Message.Direction.OUTBOUND,
     ).count() == 1
     mock_send.assert_not_called()
-    mock_delivery_delay.assert_called_once_with(str(message.id))
+    mock_delivery_delay.assert_called_once_with(str(message.id), None)
     assert secret not in caplog.text
     assert 'Mensagem fonte sensivel.' not in caplog.text
     assert 'Resposta que falhou no envio.' not in caplog.text
@@ -279,7 +293,7 @@ def test_duplicate_task_after_delivery_enqueue_does_not_retry_generation_or_send
     ).count() == 1
     assert Message.objects.get(id=first_result).status == Message.Status.PENDING
     first_send.assert_not_called()
-    first_delivery_delay.assert_called_once_with(str(first_result))
+    first_delivery_delay.assert_called_once_with(str(first_result), None)
     second_registry.assert_not_called()
     second_send.assert_not_called()
 
@@ -570,7 +584,7 @@ def test_process_ai_response_uses_only_current_workspace_provider_config() -> No
         'content': 'Prompt correto',
     }
     mock_send_whatsapp.assert_not_called()
-    mock_delivery_delay.assert_called_once_with(str(message.id))
+    mock_delivery_delay.assert_called_once_with(str(message.id), None)
 
 
 @pytest.mark.django_db
@@ -605,7 +619,7 @@ def test_process_ai_response_ignores_workspace_ai_system_prompt() -> None:
     assert messages[0] == {'role': 'system', 'content': 'PROMPT_OFICIAL_PROVIDER'}
     assert 'PROMPT_LEGADO_WORKSPACE' not in str(messages)
     mock_send_whatsapp.assert_not_called()
-    mock_delivery_delay.assert_called_once_with(str(message.id))
+    mock_delivery_delay.assert_called_once_with(str(message.id), None)
 
 
 @pytest.mark.django_db
@@ -679,7 +693,7 @@ def test_process_ai_response_ignores_divergent_legacy_provider_config() -> None:
     assert 'Prompt legado que nao deve ser usado' not in str(messages)
     assert 'PROMPT_LEGADO_WORKSPACE' not in str(messages)
     mock_send_whatsapp.assert_not_called()
-    mock_delivery_delay.assert_called_once_with(str(message.id))
+    mock_delivery_delay.assert_called_once_with(str(message.id), None)
 
 
 @pytest.mark.django_db
@@ -712,7 +726,7 @@ def test_process_ai_response_with_empty_provider_prompt_does_not_send_empty_syst
         {'role': 'user', 'content': 'Sem prompt de sistema.'},
     ]
     mock_send_whatsapp.assert_not_called()
-    mock_delivery_delay.assert_called_once_with(str(message.id))
+    mock_delivery_delay.assert_called_once_with(str(message.id), None)
 
 
 @pytest.mark.django_db
@@ -879,7 +893,7 @@ def test_process_ai_response_retry_with_same_run_creates_single_output_message()
         direction=Message.Direction.OUTBOUND,
     ).count() == 1
     assert message.status == Message.Status.PENDING
-    mock_delivery_delay.assert_called_once_with(str(message.id))
+    mock_delivery_delay.assert_called_once_with(str(message.id), None)
     mock_send_whatsapp.assert_not_called()
 
 
@@ -953,4 +967,4 @@ def test_process_ai_response_without_source_message_id_does_not_create_run() -> 
     assert message.external_id is None
     assert not AIProcessingRun.objects.exists()
     mock_send_whatsapp.assert_not_called()
-    mock_delivery_delay.assert_called_once_with(str(message.id))
+    mock_delivery_delay.assert_called_once_with(str(message.id), None)

@@ -7,10 +7,10 @@ import logging
 from datetime import timedelta
 from typing import Any
 
-import requests
 from django.utils import timezone
 
-from omnichannel.models import Conversation
+from omnichannel.evolution import EvolutionAPIError
+from omnichannel.models import Conversation, WhatsAppChannel
 from omnichannel.services import send_whatsapp_message
 
 from .models import Flow
@@ -37,9 +37,11 @@ class FlowEngine:
             return
 
         try:
-            conversation = Conversation.objects.select_related('workspace', 'contact').get(
-                id=conversation_id,
-            )
+            conversation = Conversation.objects.select_related(
+                'workspace',
+                'contact',
+                'whatsapp_channel',
+            ).get(id=conversation_id)
         except Conversation.DoesNotExist:
             logger.warning(
                 'Conversa nao encontrada para execucao de flow (conversation_id=%s)',
@@ -170,17 +172,35 @@ class FlowEngine:
             )
             return True
 
-        try:
-            send_whatsapp_message(phone=phone, text=text)
-        except requests.exceptions.RequestException as exc:
-            logger.error(
-                'Falha ao enviar WhatsApp por flow '
-                '(flow_id=%s, node_id=%s, conversation_id=%s): %s',
+        channel = conversation.whatsapp_channel
+        if (
+            channel is None
+            or channel.workspace_id != conversation.workspace_id
+            or channel.provider != WhatsAppChannel.Provider.EVOLUTION
+            or channel.status != WhatsAppChannel.Status.CONNECTED
+        ):
+            logger.warning(
+                'Node send_whatsapp ignorado: canal indisponivel '
+                '(flow_id=%s, node_id=%s, conversation_id=%s)',
                 flow.id,
                 node.get('id'),
                 conversation.id,
-                exc,
-                exc_info=True,
+            )
+            return True
+
+        try:
+            send_whatsapp_message(channel=channel, phone=phone, text=text)
+        except EvolutionAPIError as exc:
+            logger.warning(
+                'Falha ao enviar WhatsApp por flow',
+                extra={
+                    'flow_id': str(flow.id),
+                    'node_id': str(node.get('id') or ''),
+                    'conversation_id': str(conversation.id),
+                    'workspace_id': str(conversation.workspace_id),
+                    'whatsapp_channel_id': str(channel.id),
+                    'exception_type': type(exc).__name__,
+                },
             )
             return True
 
