@@ -37,6 +37,7 @@ export const whatsappChannelQRCodeQueryBehavior = {
   refetchInterval: whatsappChannelQRCodeRefetchInterval,
   refetchIntervalInBackground: false,
   refetchOnWindowFocus: false,
+  refetchOnReconnect: false,
   retry: false,
   gcTime: 0
 } as const;

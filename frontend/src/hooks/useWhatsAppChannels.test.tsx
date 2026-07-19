@@ -105,11 +105,16 @@ describe("WhatsApp channel query hooks", () => {
     expect(query?.options.gcTime).toBe(0);
     expect(whatsappChannelQRCodeQueryBehavior.retry).toBe(false);
     expect(whatsappChannelQRCodeQueryBehavior.refetchOnWindowFocus).toBe(false);
+    expect(whatsappChannelQRCodeQueryBehavior.refetchOnReconnect).toBe(false);
     expect(whatsappChannelQRCodeQueryBehavior.refetchInterval).toBe(
       whatsappChannelQRCodeRefetchInterval
     );
     expect(qrRefetchInterval()).toBe(WHATSAPP_CHANNEL_QR_POLL_MS);
     expect(60_000 / WHATSAPP_CHANNEL_QR_POLL_MS).toBeLessThan(10);
+  });
+
+  it("desabilita refetch automatico do QR ao reconectar a rede", () => {
+    expect(whatsappChannelQRCodeQueryBehavior.refetchOnReconnect).toBe(false);
   });
 
   it("mantem polling de QR em waiting_qr sem erro", () => {
