@@ -88,7 +88,7 @@ def test_conversation_detail_messages_and_reply_other_workspace_are_blocked() ->
 
     detail_response = client.get(f'/api/omnichannel/conversations/{conversation_b.id}/')
     messages_response = client.get(f'/api/omnichannel/conversations/{conversation_b.id}/messages/')
-    with patch('omnichannel.views.send_whatsapp_message') as mock_send:
+    with patch('omnichannel.tasks.send_outbound_whatsapp_message.delay') as mock_send:
         reply_response = client.post(
             f'/api/omnichannel/conversations/{conversation_b.id}/reply/',
             {'body': 'Tentativa cross tenant'},

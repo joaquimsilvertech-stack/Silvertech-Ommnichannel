@@ -13,6 +13,9 @@ from omnichannel.services import MAX_AI_PROVIDER_ATTEMPTS, MAX_OUTBOUND_DELIVERY
 
 logger = logging.getLogger(__name__)
 
+OUTBOUND_DELIVERY_BUSY = 'OUTBOUND_DELIVERY_BUSY'
+OUTBOUND_DELIVERY_BUSY_RETRY_SECONDS = 10
+
 
 @shared_task(name='omnichannel.process_whatsapp_webhook')
 def process_whatsapp_webhook_task(payload: dict[str, Any], workspace_id: str) -> None:
@@ -178,6 +181,7 @@ def process_ai_response(
         mark_ai_processing_failed,
         mark_ai_processing_retrying,
         mark_ai_processing_succeeded,
+        schedule_outbound_message_after_commit,
     )
     from workspaces.models import WorkspaceAIProviderConfig
 
@@ -500,13 +504,7 @@ def process_ai_response(
                 run=ai_processing_run,
                 output_message=message,
             )
-        transaction.on_commit(
-            lambda message_id=str(message.id), channel_id=(
-                str(conversation.whatsapp_channel_id)
-                if conversation.whatsapp_channel_id is not None
-                else None
-            ): send_outbound_whatsapp_message.delay(message_id, channel_id),
-        )
+        schedule_outbound_message_after_commit(message=message)
 
     record_ai_observability_event_safe(
         workspace=conversation.workspace,
@@ -542,6 +540,8 @@ def send_outbound_whatsapp_message(
     whatsapp_channel_id: str | None = None,
 ) -> str | None:
     """Entrega uma Message OUTBOUND existente pela Evolution com retry isolado."""
+    from uuid import UUID
+
     from django.core.exceptions import ValidationError
 
     from omnichannel.evolution import EvolutionAPIError
@@ -554,130 +554,202 @@ def send_outbound_whatsapp_message(
         OutboundWhatsAppRoutingError,
         resolve_outbound_whatsapp_route,
     )
+    from omnichannel.outbound_delivery_lock import (
+        OutboundDeliveryLockError,
+        acquire_outbound_delivery_lock,
+    )
     from omnichannel.services import (
+        claim_message_delivery_attempt,
         extract_evolution_message_external_id,
         map_evolution_exception_to_error_code,
         mark_message_as_sent,
-        mark_message_delivery_attempt_started,
         send_whatsapp_message,
     )
 
     try:
-        message = Message.objects.select_related(
-            'conversation',
-            'conversation__contact',
-            'conversation__workspace',
-            'conversation__whatsapp_channel',
-        ).get(id=message_id)
-    except (Message.DoesNotExist, TypeError, ValueError, ValidationError):
+        normalized_message_id = UUID(str(message_id))
+    except (AttributeError, TypeError, ValueError):
         return None
 
-    if message.direction != Message.Direction.OUTBOUND:
+    if not Message.objects.only('id').filter(id=normalized_message_id).exists():
         return None
-
-    if message.status == Message.Status.SENT:
-        return str(message.id)
-
-    if message.status != Message.Status.PENDING:
-        return None
-
-    message = mark_message_delivery_attempt_started(message=message)
-    persisted_channel_id = message.conversation.whatsapp_channel_id
-    expected_channel_id = (
-        str(whatsapp_channel_id)
-        if whatsapp_channel_id is not None
-        else str(persisted_channel_id) if persisted_channel_id is not None else None
-    )
-    record_ai_observability_event_safe(
-        workspace=message.conversation.workspace,
-        event_type=AIObservabilityEvent.EventType.OUTBOUND_DELIVERY_ATTEMPT,
-        status=AIObservabilityEvent.Status.PENDING,
-        conversation=message.conversation,
-        output_message=message,
-        attempt_count=message.send_attempt_count,
-        metadata={
-            'source': 'outbound_delivery',
-            'delivery_status': message.status,
-        },
-    )
-    delivery_started_at = perf_counter()
 
     try:
-        route = resolve_outbound_whatsapp_route(
-            message=message,
-            expected_channel_id=expected_channel_id,
-        )
-    except OutboundWhatsAppRoutingError as exc:
-        return _handle_outbound_delivery_failure(
-            task=self,
-            message=message,
-            exc=exc,
-            error_code=exc.error_code,
-            retryable=exc.retryable,
-            expected_channel_id=(
-                str(persisted_channel_id)
-                if persisted_channel_id is not None
-                else None
-            ),
-            delivery_started_at=delivery_started_at,
-        )
+        lock_context = acquire_outbound_delivery_lock(normalized_message_id)
+        with lock_context as delivery_lock:
+            if not delivery_lock.acquired:
+                try:
+                    send_outbound_whatsapp_message.apply_async(
+                        args=(str(normalized_message_id), whatsapp_channel_id),
+                        countdown=OUTBOUND_DELIVERY_BUSY_RETRY_SECONDS,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        'Falha ao reagendar delivery outbound em contencao',
+                        extra={
+                            'message_id': str(normalized_message_id),
+                            'whatsapp_channel_id': str(whatsapp_channel_id or ''),
+                            'error_code': OUTBOUND_DELIVERY_BUSY,
+                            'exception_type': type(exc).__name__,
+                            'lock_acquired': False,
+                        },
+                    )
+                else:
+                    logger.info(
+                        'Delivery outbound reagendado por contencao',
+                        extra={
+                            'message_id': str(normalized_message_id),
+                            'whatsapp_channel_id': str(whatsapp_channel_id or ''),
+                            'error_code': OUTBOUND_DELIVERY_BUSY,
+                            'retry_countdown': OUTBOUND_DELIVERY_BUSY_RETRY_SECONDS,
+                            'lock_acquired': False,
+                        },
+                    )
+                return None
 
-    expected_channel_id = str(route.channel.id)
-    try:
-        evolution_response = send_whatsapp_message(
-            channel=route.channel,
-            phone=route.recipient,
-            text=message.body,
-        )
-        external_id = extract_evolution_message_external_id(evolution_response)
-    except EvolutionAPIError as exc:
-        return _handle_outbound_delivery_failure(
-            task=self,
-            message=message,
-            exc=exc,
-            error_code=map_evolution_exception_to_error_code(exc),
-            retryable=bool(exc.retryable),
-            expected_channel_id=expected_channel_id,
-            delivery_started_at=delivery_started_at,
-        )
-    except Exception as exc:
-        return _handle_outbound_delivery_failure(
-            task=self,
-            message=message,
-            exc=exc,
-            error_code=map_evolution_exception_to_error_code(exc),
-            retryable=False,
-            expected_channel_id=expected_channel_id,
-            delivery_started_at=delivery_started_at,
-        )
+            try:
+                message = Message.objects.select_related(
+                    'conversation',
+                    'conversation__contact',
+                    'conversation__workspace',
+                    'conversation__whatsapp_channel',
+                ).get(id=normalized_message_id)
+            except (Message.DoesNotExist, TypeError, ValueError, ValidationError):
+                return None
 
-    message = mark_message_as_sent(message=message, external_id=external_id)
-    record_ai_observability_event_safe(
-        workspace=message.conversation.workspace,
-        event_type=AIObservabilityEvent.EventType.OUTBOUND_DELIVERY_SUCCESS,
-        status=AIObservabilityEvent.Status.SUCCESS,
-        conversation=message.conversation,
-        output_message=message,
-        latency_ms=calculate_latency_ms(delivery_started_at),
-        attempt_count=message.send_attempt_count,
-        metadata={
-            'source': 'outbound_delivery',
-            'delivery_status': message.status,
-        },
-    )
-    logger.info(
-        'Mensagem outbound enviada pela Evolution API',
-        extra={
-            'workspace_id': str(message.conversation.workspace_id),
-            'conversation_id': str(message.conversation_id),
-            'message_id': str(message.id),
-            'whatsapp_channel_id': str(route.channel.id),
-            'attempt_count': message.send_attempt_count,
-            'status': message.status,
-            'latency_ms': calculate_latency_ms(delivery_started_at),
-        },
-    )
-    return str(message.id)
+            if message.direction != Message.Direction.OUTBOUND:
+                return None
+
+            if message.status in {
+                Message.Status.SENT,
+                Message.Status.DELIVERED,
+                Message.Status.READ,
+            }:
+                return str(message.id)
+
+            if message.status != Message.Status.PENDING:
+                return None
+
+            message = claim_message_delivery_attempt(message_id=message.id)
+            if message is None:
+                current_status = Message.objects.values_list('status', flat=True).get(
+                    id=normalized_message_id,
+                )
+                if current_status in {
+                    Message.Status.SENT,
+                    Message.Status.DELIVERED,
+                    Message.Status.READ,
+                }:
+                    return str(normalized_message_id)
+                return None
+
+            persisted_channel_id = message.conversation.whatsapp_channel_id
+            expected_channel_id = (
+                str(whatsapp_channel_id)
+                if whatsapp_channel_id is not None
+                else str(persisted_channel_id) if persisted_channel_id is not None else None
+            )
+            record_ai_observability_event_safe(
+                workspace=message.conversation.workspace,
+                event_type=AIObservabilityEvent.EventType.OUTBOUND_DELIVERY_ATTEMPT,
+                status=AIObservabilityEvent.Status.PENDING,
+                conversation=message.conversation,
+                output_message=message,
+                attempt_count=message.send_attempt_count,
+                metadata={
+                    'source': 'outbound_delivery',
+                    'delivery_status': message.status,
+                },
+            )
+            delivery_started_at = perf_counter()
+
+            try:
+                route = resolve_outbound_whatsapp_route(
+                    message=message,
+                    expected_channel_id=expected_channel_id,
+                )
+            except OutboundWhatsAppRoutingError as exc:
+                return _handle_outbound_delivery_failure(
+                    task=self,
+                    message=message,
+                    exc=exc,
+                    error_code=exc.error_code,
+                    retryable=exc.retryable,
+                    expected_channel_id=(
+                        str(persisted_channel_id)
+                        if persisted_channel_id is not None
+                        else None
+                    ),
+                    delivery_started_at=delivery_started_at,
+                )
+
+            expected_channel_id = str(route.channel.id)
+            try:
+                evolution_response = send_whatsapp_message(
+                    channel=route.channel,
+                    phone=route.recipient,
+                    text=message.body,
+                )
+                external_id = extract_evolution_message_external_id(evolution_response)
+            except EvolutionAPIError as exc:
+                return _handle_outbound_delivery_failure(
+                    task=self,
+                    message=message,
+                    exc=exc,
+                    error_code=map_evolution_exception_to_error_code(exc),
+                    retryable=bool(exc.retryable),
+                    expected_channel_id=expected_channel_id,
+                    delivery_started_at=delivery_started_at,
+                )
+            except Exception as exc:
+                return _handle_outbound_delivery_failure(
+                    task=self,
+                    message=message,
+                    exc=exc,
+                    error_code=map_evolution_exception_to_error_code(exc),
+                    retryable=False,
+                    expected_channel_id=expected_channel_id,
+                    delivery_started_at=delivery_started_at,
+                )
+
+            message = mark_message_as_sent(message=message, external_id=external_id)
+            record_ai_observability_event_safe(
+                workspace=message.conversation.workspace,
+                event_type=AIObservabilityEvent.EventType.OUTBOUND_DELIVERY_SUCCESS,
+                status=AIObservabilityEvent.Status.SUCCESS,
+                conversation=message.conversation,
+                output_message=message,
+                latency_ms=calculate_latency_ms(delivery_started_at),
+                attempt_count=message.send_attempt_count,
+                metadata={
+                    'source': 'outbound_delivery',
+                    'delivery_status': message.status,
+                },
+            )
+            logger.info(
+                'Mensagem outbound enviada pela Evolution API',
+                extra={
+                    'workspace_id': str(message.conversation.workspace_id),
+                    'conversation_id': str(message.conversation_id),
+                    'message_id': str(message.id),
+                    'whatsapp_channel_id': str(route.channel.id),
+                    'attempt_count': message.send_attempt_count,
+                    'status': message.status,
+                    'latency_ms': calculate_latency_ms(delivery_started_at),
+                },
+            )
+            return str(message.id)
+    except OutboundDeliveryLockError as exc:
+        logger.warning(
+            'Delivery outbound nao adquiriu lock PostgreSQL',
+            extra={
+                'message_id': str(normalized_message_id),
+                'whatsapp_channel_id': str(whatsapp_channel_id or ''),
+                'error_code': 'OUTBOUND_DELIVERY_LOCK_UNAVAILABLE',
+                'exception_type': type(exc).__name__,
+            },
+        )
+        return None
 
 
 def _handle_outbound_delivery_failure(
@@ -689,8 +761,8 @@ def _handle_outbound_delivery_failure(
     retryable: bool,
     expected_channel_id: str | None,
     delivery_started_at: float,
-) -> str:
-    from omnichannel.models import AIObservabilityEvent
+) -> str | None:
+    from omnichannel.models import AIObservabilityEvent, Message
     from omnichannel.observability import (
         calculate_latency_ms,
         record_ai_observability_event_safe,
@@ -714,6 +786,15 @@ def _handle_outbound_delivery_failure(
             error_code=error_code,
             next_retry_at=next_retry_at,
         )
+        if message.status != Message.Status.PENDING:
+            if message.status in {
+                Message.Status.SENT,
+                Message.Status.DELIVERED,
+                Message.Status.READ,
+            }:
+                return str(message.id)
+            return None
+
         record_ai_observability_event_safe(
             workspace=message.conversation.workspace,
             event_type=AIObservabilityEvent.EventType.OUTBOUND_DELIVERY_RETRYING,
@@ -748,6 +829,15 @@ def _handle_outbound_delivery_failure(
         )
 
     message = mark_message_as_failed(message=message, error_code=error_code)
+    if message.status != Message.Status.FAILED:
+        if message.status in {
+            Message.Status.SENT,
+            Message.Status.DELIVERED,
+            Message.Status.READ,
+        }:
+            return str(message.id)
+        return None
+
     record_ai_observability_event_safe(
         workspace=message.conversation.workspace,
         event_type=AIObservabilityEvent.EventType.OUTBOUND_DELIVERY_FAILED,

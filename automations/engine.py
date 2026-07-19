@@ -7,11 +7,14 @@ import logging
 from datetime import timedelta
 from typing import Any
 
+from django.db import transaction
 from django.utils import timezone
 
-from omnichannel.evolution import EvolutionAPIError
-from omnichannel.models import Conversation, WhatsAppChannel
-from omnichannel.services import send_whatsapp_message
+from omnichannel.models import Conversation
+from omnichannel.services import (
+    create_pending_outbound_message,
+    schedule_outbound_message_after_commit,
+)
 
 from .models import Flow
 
@@ -151,9 +154,9 @@ class FlowEngine:
         conversation: Conversation,
         config: dict[str, Any],
     ) -> bool:
-        """Envia uma mensagem WhatsApp via Evolution API."""
+        """Persiste uma mensagem outbound e agenda a entrega duravel."""
         text = config.get('text')
-        if not text or not isinstance(text, str):
+        if not isinstance(text, str) or not text.strip():
             logger.warning(
                 'Node send_whatsapp sem texto valido (flow_id=%s, node_id=%s)',
                 flow.id,
@@ -161,54 +164,20 @@ class FlowEngine:
             )
             return True
 
-        phone = conversation.contact.phone
-        if not phone:
-            logger.warning(
-                'Node send_whatsapp ignorado: contato sem telefone '
-                '(flow_id=%s, node_id=%s, conversation_id=%s)',
-                flow.id,
-                node.get('id'),
-                conversation.id,
+        with transaction.atomic():
+            message = create_pending_outbound_message(
+                conversation=conversation,
+                body=text,
             )
-            return True
-
-        channel = conversation.whatsapp_channel
-        if (
-            channel is None
-            or channel.workspace_id != conversation.workspace_id
-            or channel.provider != WhatsAppChannel.Provider.EVOLUTION
-            or channel.status != WhatsAppChannel.Status.CONNECTED
-        ):
-            logger.warning(
-                'Node send_whatsapp ignorado: canal indisponivel '
-                '(flow_id=%s, node_id=%s, conversation_id=%s)',
-                flow.id,
-                node.get('id'),
-                conversation.id,
-            )
-            return True
-
-        try:
-            send_whatsapp_message(channel=channel, phone=phone, text=text)
-        except EvolutionAPIError as exc:
-            logger.warning(
-                'Falha ao enviar WhatsApp por flow',
-                extra={
-                    'flow_id': str(flow.id),
-                    'node_id': str(node.get('id') or ''),
-                    'conversation_id': str(conversation.id),
-                    'workspace_id': str(conversation.workspace_id),
-                    'whatsapp_channel_id': str(channel.id),
-                    'exception_type': type(exc).__name__,
-                },
-            )
-            return True
+            schedule_outbound_message_after_commit(message=message)
 
         logger.info(
-            'Mensagem WhatsApp enviada por flow (flow_id=%s, node_id=%s, conversation_id=%s)',
+            'Mensagem outbound agendada por flow '
+            '(flow_id=%s, node_id=%s, conversation_id=%s, message_id=%s)',
             flow.id,
             node.get('id'),
             conversation.id,
+            message.id,
         )
         return True
 

@@ -1,5 +1,6 @@
 import logging
 
+from django.db import transaction
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django_filters.rest_framework import DjangoFilterBackend
@@ -15,8 +16,7 @@ from rest_framework.views import APIView
 from crm.mixins import WorkspaceScopedQuerysetMixin
 from crm.pagination import CRMCursorPagination
 
-from .models import Conversation, Message, WhatsAppChannel
-from .evolution import EvolutionAPIError
+from .models import Conversation, Message
 from .observability import (
     DEFAULT_RECENT_EVENTS_LIMIT,
     MAX_RECENT_EVENTS_LIMIT,
@@ -31,7 +31,10 @@ from .serializers import (
     MessageCreateSerializer,
     MessageSerializer,
 )
-from .services import send_whatsapp_message
+from .services import (
+    create_pending_outbound_message,
+    schedule_outbound_message_after_commit,
+)
 from .tasks import process_whatsapp_webhook_task
 from workspaces.permissions import IsWorkspaceAdminMember
 
@@ -179,52 +182,18 @@ class ConversationViewSet(WorkspaceScopedQuerysetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def reply(self, request: Request, pk: str | None = None) -> Response:
-        """Envia mensagem outbound (agente -> cliente) via Evolution API."""
+        """Persiste a resposta do agente e agenda sua entrega apos o commit."""
         input_serializer = MessageCreateSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
         body = input_serializer.validated_data['body']
 
         conversation = self.get_object()
-        phone = conversation.contact.phone
-        if not phone:
-            return Response(
-                {'detail': 'Contato sem telefone cadastrado.'},
-                status=status.HTTP_400_BAD_REQUEST,
+        with transaction.atomic():
+            message = create_pending_outbound_message(
+                conversation=conversation,
+                body=body,
             )
+            schedule_outbound_message_after_commit(message=message)
 
-        channel = conversation.whatsapp_channel
-        if (
-            channel is None
-            or channel.workspace_id != conversation.workspace_id
-            or channel.provider != WhatsAppChannel.Provider.EVOLUTION
-            or channel.status != WhatsAppChannel.Status.CONNECTED
-        ):
-            return Response(
-                {'detail': 'Canal WhatsApp indisponivel para envio.'},
-                status=status.HTTP_409_CONFLICT,
-            )
-
-        try:
-            evolution_response = send_whatsapp_message(
-                channel=channel,
-                phone=phone,
-                text=body,
-            )
-        except EvolutionAPIError:
-            return Response(
-                {'detail': 'Falha ao enviar mensagem via WhatsApp.'},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
-
-        key = evolution_response.get('key', {})
-        external_id = key.get('id') if isinstance(key, dict) else None
-
-        message = Message.objects.create(
-            conversation=conversation,
-            body=body,
-            direction=Message.Direction.OUTBOUND,
-            status=Message.Status.SENT,
-            external_id=external_id,
-        )
         output_serializer = MessageSerializer(message, context={'request': request})
         return Response(output_serializer.data, status=status.HTTP_201_CREATED)

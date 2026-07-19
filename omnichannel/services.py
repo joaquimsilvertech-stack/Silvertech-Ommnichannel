@@ -541,12 +541,12 @@ def _sanitize_ai_processing_error_code(error_code: str) -> str:
     return sanitized[:64] or 'UNKNOWN_ERROR'
 
 
-def create_pending_ai_message(
+def create_pending_outbound_message(
     *,
     conversation: Conversation,
     body: str,
 ) -> Message:
-    """Cria a mensagem outbound da IA antes do envio externo."""
+    """Persist an outbound message before any external delivery attempt."""
     return Message.objects.create(
         conversation=conversation,
         body=body,
@@ -557,12 +557,89 @@ def create_pending_ai_message(
     )
 
 
+def create_pending_ai_message(
+    *,
+    conversation: Conversation,
+    body: str,
+) -> Message:
+    """Compatibility wrapper for AI-generated outbound messages."""
+    return create_pending_outbound_message(
+        conversation=conversation,
+        body=body,
+    )
+
+
+def schedule_outbound_message_after_commit(*, message: Message) -> None:
+    """Schedule delivery with technical identifiers only after DB commit."""
+    if message.pk is None or message.direction != Message.Direction.OUTBOUND:
+        raise ValueError('A persisted outbound message is required for delivery.')
+
+    message_id = str(message.id)
+    channel_id = message.conversation.whatsapp_channel_id
+    expected_channel_id = str(channel_id) if channel_id is not None else None
+    workspace_id = str(message.conversation.workspace_id)
+    conversation_id = str(message.conversation_id)
+
+    def _enqueue() -> None:
+        from omnichannel.tasks import send_outbound_whatsapp_message
+
+        try:
+            send_outbound_whatsapp_message.delay(
+                message_id,
+                expected_channel_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                'Falha ao agendar delivery outbound',
+                extra={
+                    'workspace_id': workspace_id,
+                    'conversation_id': conversation_id,
+                    'message_id': message_id,
+                    'whatsapp_channel_id': expected_channel_id or '',
+                    'error_code': 'OUTBOUND_DELIVERY_ENQUEUE_FAILED',
+                    'exception_type': type(exc).__name__,
+                },
+            )
+
+    transaction.on_commit(_enqueue)
+
+
+def claim_message_delivery_attempt(*, message_id) -> Message | None:
+    """Atomically claim a still-pending Message and count one HTTP attempt."""
+    with transaction.atomic():
+        locked_message = Message.objects.select_for_update(of=('self',)).select_related(
+            'conversation',
+            'conversation__contact',
+            'conversation__workspace',
+            'conversation__whatsapp_channel',
+        ).get(id=message_id)
+        if locked_message.status != Message.Status.PENDING:
+            return None
+
+        locked_message.send_attempt_count += 1
+        locked_message.last_send_attempt_at = timezone.now()
+        locked_message.next_send_retry_at = None
+        locked_message.save(
+            update_fields=[
+                'send_attempt_count',
+                'last_send_attempt_at',
+                'next_send_retry_at',
+                'updated_at',
+            ],
+        )
+        return locked_message
+
+
 def mark_message_delivery_attempt_started(
     *,
     message: Message,
 ) -> Message:
+    """Backward-compatible wrapper around the conditional delivery claim."""
     with transaction.atomic():
         locked_message = Message.objects.select_for_update().get(id=message.id)
+        if locked_message.status != Message.Status.PENDING:
+            return locked_message
+
         locked_message.send_attempt_count += 1
         locked_message.last_send_attempt_at = timezone.now()
         locked_message.next_send_retry_at = None
@@ -585,12 +662,13 @@ def mark_message_delivery_retrying(
 ) -> Message:
     with transaction.atomic():
         locked_message = Message.objects.select_for_update().get(id=message.id)
-        locked_message.status = Message.Status.PENDING
+        if locked_message.status != Message.Status.PENDING:
+            return locked_message
+
         locked_message.send_error_code = sanitize_message_send_error_code(error_code)
         locked_message.next_send_retry_at = next_retry_at
         locked_message.save(
             update_fields=[
-                'status',
                 'send_error_code',
                 'next_send_retry_at',
                 'updated_at',
@@ -614,20 +692,30 @@ def mark_message_as_sent(
 ) -> Message:
     with transaction.atomic():
         locked_message = Message.objects.select_for_update().get(id=message.id)
-        locked_message.status = Message.Status.SENT
-        if external_id:
+        update_fields: list[str] = []
+
+        if locked_message.status in {Message.Status.PENDING, Message.Status.FAILED}:
+            locked_message.status = Message.Status.SENT
+            update_fields.append('status')
+
+        if external_id and not locked_message.external_id:
             locked_message.external_id = external_id
-        locked_message.send_error_code = ''
-        locked_message.next_send_retry_at = None
-        locked_message.save(
-            update_fields=[
-                'status',
-                'external_id',
-                'send_error_code',
-                'next_send_retry_at',
-                'updated_at',
-            ],
-        )
+            update_fields.append('external_id')
+
+        if locked_message.status in {
+            Message.Status.SENT,
+            Message.Status.DELIVERED,
+            Message.Status.READ,
+        }:
+            if locked_message.send_error_code:
+                locked_message.send_error_code = ''
+                update_fields.append('send_error_code')
+            if locked_message.next_send_retry_at is not None:
+                locked_message.next_send_retry_at = None
+                update_fields.append('next_send_retry_at')
+
+        if update_fields:
+            locked_message.save(update_fields=[*update_fields, 'updated_at'])
         return locked_message
 
 
@@ -638,6 +726,9 @@ def mark_message_as_failed(
 ) -> Message:
     with transaction.atomic():
         locked_message = Message.objects.select_for_update().get(id=message.id)
+        if locked_message.status != Message.Status.PENDING:
+            return locked_message
+
         locked_message.status = Message.Status.FAILED
         locked_message.send_error_code = sanitize_message_send_error_code(error_code)
         locked_message.next_send_retry_at = None
@@ -1048,13 +1139,15 @@ def _process_connection_update(payload: dict[str, Any]) -> None:
     """Loga mudancas de estado da conexao Evolution."""
     data = payload.get('data')
     state = data.get('state') if isinstance(data, dict) else None
-    instance = payload.get('instance')
 
     if state == 'close':
-        logger.warning('Evolution desconectada (instance=%s, state=%s)', instance, state)
+        logger.warning('Evolution desconectada', extra={'status': str(state or '')})
         return
 
-    logger.info('Evolution connection.update (instance=%s, state=%s)', instance, state)
+    logger.info(
+        'Evolution connection.update',
+        extra={'status': str(state or '')},
+    )
 
 
 def process_whatsapp_payload(payload: dict[str, Any], workspace_id: str) -> None:

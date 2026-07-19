@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+from threading import Event, Thread
 from unittest.mock import patch
 
 import pytest
 from celery.exceptions import Retry
+from django.db import close_old_connections, connection
 from django.test import override_settings
 
 from omnichannel.evolution import (
@@ -540,3 +542,145 @@ def test_delivery_logs_exclude_phone_body_instance_and_credentials(caplog) -> No
     assert 'Private outbound body' not in rendered
     assert 'private-instance-name' not in rendered
     assert 'private-instance-token' not in rendered
+
+
+@pytest.mark.django_db(transaction=True)
+def test_concurrent_tasks_send_once_and_only_winner_counts_attempt() -> None:
+    if connection.vendor != 'postgresql':
+        pytest.skip('PostgreSQL advisory lock test.')
+
+    message = _outbound_message(body='Concurrent outbound body')
+    channel_id = str(message.conversation.whatsapp_channel_id)
+    send_started = Event()
+    release_send = Event()
+    first_finished = Event()
+    second_finished = Event()
+    thread_errors: list[BaseException] = []
+    thread_results: dict[str, str | None] = {}
+
+    def blocking_send(**kwargs):
+        send_started.set()
+        if not release_send.wait(timeout=10):
+            raise AssertionError('Timed out waiting to release outbound HTTP mock.')
+        return {'key': {'id': 'single-provider-id'}}
+
+    def run_task(name: str, finished: Event) -> None:
+        close_old_connections()
+        try:
+            thread_results[name] = send_outbound_whatsapp_message.run(
+                str(message.id),
+                channel_id,
+            )
+        except BaseException as exc:
+            thread_errors.append(exc)
+        finally:
+            close_old_connections()
+            finished.set()
+
+    with (
+        patch(
+            'omnichannel.services.send_whatsapp_message',
+            side_effect=blocking_send,
+        ) as mock_send,
+        patch.object(send_outbound_whatsapp_message, 'apply_async') as mock_apply_async,
+    ):
+        first = Thread(target=run_task, args=('first', first_finished), daemon=True)
+        second = Thread(target=run_task, args=('second', second_finished), daemon=True)
+        first.start()
+        try:
+            assert send_started.wait(timeout=10)
+            second.start()
+            assert second_finished.wait(timeout=10)
+
+            message.refresh_from_db()
+            assert message.status == Message.Status.PENDING
+            assert message.send_attempt_count == 1
+            assert message.send_error_code == ''
+            assert mock_send.call_count == 1
+            mock_apply_async.assert_called_once_with(
+                args=(str(message.id), channel_id),
+                countdown=10,
+            )
+        finally:
+            release_send.set()
+            first.join(timeout=10)
+            if second.ident is not None:
+                second.join(timeout=10)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert first_finished.is_set()
+        assert thread_errors == []
+
+        message.refresh_from_db()
+        assert thread_results['first'] == str(message.id)
+        assert thread_results['second'] is None
+        assert message.status == Message.Status.SENT
+        assert message.external_id == 'single-provider-id'
+        assert message.send_attempt_count == 1
+        assert Message.objects.filter(conversation=message.conversation).count() == 1
+
+        later_result = send_outbound_whatsapp_message.run(
+            str(message.id),
+            channel_id,
+        )
+
+    message.refresh_from_db()
+    assert later_result == str(message.id)
+    assert message.status == Message.Status.SENT
+    assert message.send_attempt_count == 1
+    assert mock_send.call_count == 1
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('advanced_status', [Message.Status.DELIVERED, Message.Status.READ])
+def test_late_delivery_failure_does_not_downgrade_advanced_status(
+    advanced_status: str,
+) -> None:
+    message = _outbound_message()
+
+    def advance_then_fail(**kwargs):
+        Message.objects.filter(id=message.id).update(
+            status=advanced_status,
+            external_id='status-webhook-provider-id',
+        )
+        raise EvolutionAuthenticationError()
+
+    with patch(
+        'omnichannel.services.send_whatsapp_message',
+        side_effect=advance_then_fail,
+    ):
+        result = send_outbound_whatsapp_message.run(str(message.id))
+
+    message.refresh_from_db()
+    assert result == str(message.id)
+    assert message.status == advanced_status
+    assert message.external_id == 'status-webhook-provider-id'
+    assert message.send_attempt_count == 1
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('advanced_status', [Message.Status.DELIVERED, Message.Status.READ])
+def test_late_delivery_success_does_not_downgrade_advanced_status(
+    advanced_status: str,
+) -> None:
+    message = _outbound_message()
+
+    def advance_then_succeed(**kwargs):
+        Message.objects.filter(id=message.id).update(
+            status=advanced_status,
+            external_id='status-webhook-provider-id',
+        )
+        return {'key': {'id': 'late-task-provider-id'}}
+
+    with patch(
+        'omnichannel.services.send_whatsapp_message',
+        side_effect=advance_then_succeed,
+    ):
+        result = send_outbound_whatsapp_message.run(str(message.id))
+
+    message.refresh_from_db()
+    assert result == str(message.id)
+    assert message.status == advanced_status
+    assert message.external_id == 'status-webhook-provider-id'
+    assert message.send_attempt_count == 1

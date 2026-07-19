@@ -538,6 +538,33 @@ canal. Logs registram apenas IDs tecnicos, tentativas, status, codigos seguros e
 latencia, sem telefone, corpo, instancia ou credenciais. O smoke test real da
 Evolution sera executado posteriormente em ambiente controlado.
 
+### Concorrencia e pipeline outbound
+
+Cada entrega adquire um advisory lock PostgreSQL de sessao derivado somente do
+UUID da `Message`. O lock permanece ativo durante a chamada HTTP e a persistencia
+do resultado, e e liberado em `finally`. Assim, duas tasks concorrentes nao fazem
+HTTP simultaneo para a mesma mensagem. Em contencao, a execucao perdedora
+reagenda uma verificacao curta com os mesmos IDs, sem incrementar
+`send_attempt_count` ou alterar o estado.
+
+Depois do lock, a task rele a `Message`; um claim curto com `select_for_update`
+incrementa a tentativa apenas se ela ainda estiver `PENDING`. Nenhuma transacao
+fica aberta durante o HTTP. As atualizacoes finais sao monotonicas: `SENT`,
+`DELIVERED` e `READ` nao sao rebaixados por falhas, retries ou conclusoes tardias.
+
+Reply manual, IA e `FlowEngine` compartilham a mesma pipeline: persistem uma
+unica `Message OUTBOUND PENDING` e, em `transaction.on_commit`, enfileiram somente
+`message_id` e o ID tecnico do canal esperado. Apenas
+`send_outbound_whatsapp_message` chama a Evolution. Body, telefone, nome de
+instancia, tokens, chaves e segredos nao entram nos argumentos Celery nem nos
+logs; tambem nao existe fallback para uma instancia global.
+
+O advisory lock impede envios HTTP concorrentes, mas nao oferece exactly-once
+absoluto: se a Evolution aceitar o envio e o worker morrer antes de persistir
+`SENT`, uma redelivery ainda pode repetir a tentativa porque o provider nao
+fornece uma chave de idempotencia para esse fluxo. O smoke test real continua
+reservado para uma etapa posterior em ambiente controlado.
+
 ## Blocos frontend de IA
 
 O frontend Vite/React possui blocos reutilizaveis para gerenciar providers de IA por workspace na rota `/workspaces/:workspaceId/settings/ai`. A tela consome os endpoints `/api/workspaces/{workspace_id}/ai-providers/`, `/test/`, `/activate/`, `/deactivate/`, `/credentials/replace/` e `/credentials/revoke/`, sempre usando o backend como fonte de verdade para permissao, provider suportado, ativacao, credenciais e teste de conexao.
