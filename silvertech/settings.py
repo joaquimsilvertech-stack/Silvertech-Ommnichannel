@@ -196,6 +196,7 @@ REST_FRAMEWORK = {
         'anon': '1000/minute',
         'user': '10000/minute',
         'auth': '5/minute',
+        'auth_register': '5/minute',
         'webhook': '120/minute',
         'ai_provider_test_connection': '5/minute',
         'ai_provider_activation': '5/minute',

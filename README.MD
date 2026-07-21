@@ -601,6 +601,61 @@ Depois que a `output_message` existe, falhas da Evolution retryam apenas o envio
 
 Nenhuma credencial, payload bruto, header, resposta bruta da Evolution, prompt completo ou resposta completa da IA e armazenada ou logada nesse fluxo. Frontend, observabilidade avancada, retry manual e metricas de custo ficam para evolucoes futuras.
 
+### Cadastro self-service
+
+`POST /api/auth/register/` e o unico endpoint publico de escrita alem do login.
+Ele cria o **tenant minimo** de forma atomica: `User` + `Workspace` +
+`Member` com papel `OWNER`.
+
+Entrada:
+
+| Campo | Regra |
+| --- | --- |
+| `full_name` | obrigatorio, nao vazio apos trim; dividido em `first_name`/`last_name` |
+| `company_name` | obrigatorio, nao vazio apos trim; vira o `name` do Workspace |
+| `email` | obrigatorio, normalizado; unicidade case-insensitive |
+| `password` | obrigatorio, `write_only`, validado por `AUTH_PASSWORD_VALIDATORS` |
+
+`slug` e `role` **nao** sao aceitos no payload. O slug e derivado do nome da
+empresa por `slugify`; nome sem caracteres slugificaveis cai no fallback
+`workspace`, e colisao recebe um sufixo hexadecimal curto. O papel no tenant e
+sempre `OWNER`, e o `role` de plataforma do `CustomUser` permanece no default —
+o cadastro nao cria admin de plataforma.
+
+Resposta `201 Created`:
+
+```json
+{
+  "user": {"id": "<uuid>", "email": "<email>", "first_name": "...", "last_name": "...", "full_name": "..."},
+  "workspace": {"id": "<uuid>", "name": "<empresa>", "slug": "<gerado>"},
+  "membership": {"id": "<uuid>", "role": "owner"},
+  "tokens": {"access": "<jwt>", "refresh": "<jwt>"}
+}
+```
+
+Os tokens sao emitidos **apos o commit**, para logar o cliente imediatamente e
+evitar um segundo round-trip de login. `password` nunca aparece na resposta nem
+em log. E-mail duplicado retorna `400` com erro no campo `email`, nunca `500`.
+O endpoint tem throttle dedicado no escopo `auth_register` (`5/minute`).
+
+Qualquer falha em qualquer etapa desfaz **toda** a transacao: nao resta `User`,
+`Workspace` nem `Member` parcial.
+
+**Nenhuma instancia Evolution e provisionada no cadastro** e nenhum
+`WhatsAppChannel` e criado. A conexao do WhatsApp continua sendo um passo
+separado e explicito, via
+`POST /api/workspaces/{workspace_id}/whatsapp-channels/`.
+
+O superuser continua criando `Workspace` manualmente pelo Django Admin (com
+`prepopulated_fields` de slug) e associando um `Member` OWNER para suporte. Essa
+excecao e deliberada: a invariante "Workspace sempre com OWNER" e garantida no
+fluxo de cadastro, nao por constraint global no model — o que preservaria o
+caminho manual, as factories e os dados existentes. Um Workspace criado assim
+tambem pode conectar canal depois pelo mesmo endpoint de provisionamento.
+
+A tela de cadastro em React fica para uma parte futura; aqui o contrato e
+validado por Swagger e testes.
+
 ### Django Admin e testes manuais do WhatsApp
 
 O Django Admin e uma ferramenta de **inspecao operacional**, nunca de operacao.
@@ -670,10 +725,13 @@ POST /api/omnichannel/conversations/{conversation_id}/reply/
 4. Suba o Django/Uvicorn.
 5. Suba o worker Celery.
 6. Suba a Evolution API.
-7. Crie ou confirme `User`, `Workspace` e `Member` com papel `OWNER` (o Admin do
-   superuser permite criar os tres).
-8. Obtenha o JWT em `POST /api/auth/token/` com
-   `{"username": "<username>", "password": "<password>"}`.
+7. Crie a conta em `POST /api/auth/register/` — o cadastro ja devolve `User`,
+   `Workspace`, a membership `OWNER` e o par de tokens JWT. Como alternativa de
+   suporte, o Admin do superuser continua permitindo criar os tres a mao.
+8. Se preferir logar de novo (ou tiver usado o caminho manual do Admin), obtenha
+   o JWT em `POST /api/auth/token/` com
+   `{"email": "<email>", "password": "<password>"}`. Vindo do cadastro, o
+   `access` ja veio no passo 7 e este passo e dispensavel.
 9. Autorize o Swagger com `Bearer <access_token>`.
 10. Liste ou crie o canal em
     `GET`/`POST /api/workspaces/{workspace_id}/whatsapp-channels/`.
