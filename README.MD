@@ -601,6 +601,118 @@ Depois que a `output_message` existe, falhas da Evolution retryam apenas o envio
 
 Nenhuma credencial, payload bruto, header, resposta bruta da Evolution, prompt completo ou resposta completa da IA e armazenada ou logada nesse fluxo. Frontend, observabilidade avancada, retry manual e metricas de custo ficam para evolucoes futuras.
 
+### Django Admin e testes manuais do WhatsApp
+
+O Django Admin e uma ferramenta de **inspecao operacional**, nunca de operacao.
+Ele le apenas o PostgreSQL: nao chama a Evolution, nao consulta Redis, nao
+enfileira Celery e nao consulta QR Code.
+
+#### Onde encontrar cada modelo
+
+Em `/admin/`, dentro da aplicacao **Omnichannel**:
+
+| Modelo | Uso | Permissoes |
+| --- | --- | --- |
+| `canais WhatsApp` (`WhatsAppChannel`) | conferir a qual Workspace o canal pertence, provider, `instance_name` tecnico, status e timestamps de conexao | somente leitura |
+| `eventos de webhook Evolution` (`EvolutionWebhookEvent`) | diagnosticar recebimento e processamento idempotente dos eventos | somente leitura |
+| `conversas` (`Conversation`) | ver o `whatsapp_channel` associado e as mensagens da thread | tenant e canal somente leitura |
+| `mensagens` (`Message`) | inspecionar direcao, status, tentativas de envio e `body` | somente leitura |
+| `AIProcessingRun` / `AIObservabilityEvent` | diagnostico da IA | somente leitura |
+
+#### Campos exibidos e campos deliberadamente ocultos
+
+`WhatsAppChannel` exibe `name`, `workspace`, `provider`, `instance_name`,
+`status`, telefone **mascarado**, `connected_at`, `last_connection_update_at`,
+`last_error_code`, `webhook_public_id`, `created_at` e `updated_at`.
+
+Nunca sao exibidos, nem mesmo como campos somente leitura: `instance_token`,
+`webhook_secret`, `phone_number` completo, `instance_id`, `EVOLUTION_API_KEY`,
+chave de criptografia, QR Code, payload bruto, headers e resposta bruta da
+Evolution. Esses campos tambem estao fora de `list_display`, `list_filter`,
+`search_fields`, `readonly_fields`, `fieldsets`, `autocomplete_fields` e
+`raw_id_fields`, porque `EncryptedCharField` descriptografa o valor no momento
+em que o model o acessa.
+
+O telefone e renderizado pelo mesmo helper usado pelos serializers de status e
+listagem (`mask_whatsapp_phone_number`), no formato `********1234`. Telefone
+vazio, curto ou formatado aparece como `—`. O Admin nao loga telefone, `body`,
+`instance_id`, token, segredo, QR, payload, `external_id` nem headers.
+
+`EvolutionWebhookEvent` exibe `created_at`, Workspace derivado do canal,
+`whatsapp_channel`, `event_type`, `status`, `attempt_count`, `error_code`,
+`started_at` e `finished_at`. `deduplication_key` e `external_id` ficam ocultos,
+e o model nao armazena payload bruto.
+
+Conversas legadas sem canal aparecem como `Sem canal (legado)` e nao quebram a
+renderizacao. Workspace, Contact, canal logico e `whatsapp_channel` sao somente
+leitura: uma Conversation nao pode ser movida entre tenants ou canais pelo Admin.
+
+#### Message e o envio manual
+
+`Message` e o inline de mensagens sao **view-only**. Criar `Message` pelo Admin
+**nao envia nada**: o pipeline duravel comeca no endpoint, que cria a mensagem
+`OUTBOUND/PENDING`, registra `transaction.on_commit` e so entao agenda
+`send_outbound_whatsapp_message` no Celery. Uma linha inserida a mao pula
+roteamento por canal, validacao multi-tenant, controle de status e retry.
+
+O unico mecanismo de envio manual e:
+
+```
+POST /api/omnichannel/conversations/{conversation_id}/reply/
+{"body": "Mensagem de teste"}
+```
+
+#### Roteiro de teste manual pelo Swagger
+
+1. Ative o virtualenv do projeto.
+2. `python manage.py migrate`.
+3. Suba PostgreSQL e Redis.
+4. Suba o Django/Uvicorn.
+5. Suba o worker Celery.
+6. Suba a Evolution API.
+7. Crie ou confirme `User`, `Workspace` e `Member` com papel `OWNER` (o Admin do
+   superuser permite criar os tres).
+8. Obtenha o JWT em `POST /api/auth/token/` com
+   `{"username": "<username>", "password": "<password>"}`.
+9. Autorize o Swagger com `Bearer <access_token>`.
+10. Liste ou crie o canal em
+    `GET`/`POST /api/workspaces/{workspace_id}/whatsapp-channels/`.
+11. Acompanhe `.../{channel_id}/status/` e `.../{channel_id}/qr/`.
+12. Inspecione no Admin: `WhatsAppChannel`, `EvolutionWebhookEvent`, `Contact`,
+    `Conversation`, `Message`, `AIProcessingRun` e `AIObservabilityEvent`.
+13. Liste mensagens em
+    `GET /api/omnichannel/conversations/{conversation_id}/messages/`.
+14. Responda em `POST /api/omnichannel/conversations/{conversation_id}/reply/`.
+15. Confirme que a `Message` nasce `OUTBOUND/PENDING`, que o Celery a processa,
+    que o status avanca para `SENT` e que os webhooks podem avanca-la para
+    `DELIVERED` e `READ`.
+
+Nunca: criar `Message` no Admin para enviar; chamar a Evolution diretamente;
+copiar a API key da Evolution para o Swagger; colocar segredo no frontend; testar
+com o numero principal do negocio; ou fazer chamada real a Evolution dentro da
+suite automatizada. O Evolution Manager serve apenas para diagnostico
+controlado, nunca como caminho de operacao do produto.
+
+#### Migracao de instancia legada
+
+Uma instancia legada (criada antes do provisionamento self-service) pode ser
+associada a uma Workspace pelo comando existente:
+
+```
+python manage.py migrate_legacy_whatsapp_channel --workspace-id <UUID> --dry-run
+python manage.py migrate_legacy_whatsapp_channel --workspace-id <UUID>
+```
+
+O comando cria ou reutiliza o canal local e o vincula a Workspace informada. Ele
+**nao** configura um webhook novo, **nao** gera QR e **nao** chama a Evolution.
+Ele nao substitui o provisionamento self-service: um canal provisionado nasce
+com `webhook_public_id`, `webhook_secret` e ciclo de QR proprios, enquanto a
+instancia legada apenas ganha um registro local correspondente. Rode sempre o
+`--dry-run` antes.
+
+O smoke test real de ponta a ponta ocorrera depois da Parte 28, quando o cadastro
+criar Workspace e Member automaticamente.
+
 ### Frontend de conexao do WhatsApp
 
 A pagina `/workspaces/:workspaceId/settings/channels` permite que `OWNER` e
