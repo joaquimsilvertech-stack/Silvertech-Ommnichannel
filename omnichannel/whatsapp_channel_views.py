@@ -249,16 +249,15 @@ class WorkspaceWhatsAppChannelDetailView(
             204: OpenApiResponse(description='Canal removido; conversas viram legado.'),
             403: OpenApiResponse(description='Sem capability REMOVE (OWNER-only).'),
             404: OpenApiResponse(description='Canal inexistente ou de outro tenant.'),
-            502: OpenApiResponse(description='Falha segura na Evolution (error_code sanitizado).'),
         },
     )
     def delete(self, request: Request, workspace_id: str, channel_id: UUID) -> Response:
+        # remove_whatsapp_channel e best-effort: a limpeza remota falha de forma
+        # logada e a remocao local sempre prossegue, entao nao ha erro seguro a
+        # tratar aqui — o retorno e sempre 204.
         workspace = self._get_workspace(workspace_id, ChannelCapability.REMOVE)
         channel = self._get_channel(workspace=workspace, channel_id=channel_id)
-        try:
-            remove_whatsapp_channel(channel=channel)
-        except WhatsAppChannelManagementError as exc:
-            return _with_private_no_store(_safe_management_error_response(exc))
+        remove_whatsapp_channel(channel=channel)
         return _with_private_no_store(Response(status=status.HTTP_204_NO_CONTENT))
 
 

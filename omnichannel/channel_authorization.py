@@ -28,6 +28,7 @@ from enum import Enum
 from django.shortcuts import get_object_or_404
 from rest_framework.permissions import BasePermission
 
+from workspaces.authorization import user_has_workspace_role
 from workspaces.models import Member, Workspace
 
 
@@ -56,23 +57,6 @@ CHANNEL_CAPABILITY_ROLES: dict[ChannelCapability, frozenset[str]] = {
 
 def roles_for_capability(capability: ChannelCapability) -> frozenset[str]:
     return CHANNEL_CAPABILITY_ROLES[capability]
-
-
-def user_has_workspace_role(user, workspace_id, allowed_roles) -> bool:
-    """
-    Unica implementacao da checagem de role: bypass de superuser + query de
-    membership. Reutilizada tanto pela politica de canais quanto por
-    `IsWorkspaceAdminMember`.
-    """
-    if not user or not user.is_authenticated or workspace_id is None:
-        return False
-    if user.is_superuser:
-        return True
-    return Member.objects.filter(
-        workspace_id=workspace_id,
-        user=user,
-        role__in=allowed_roles,
-    ).exists()
 
 
 def user_has_channel_capability(user, workspace_id, capability: ChannelCapability) -> bool:
