@@ -11,15 +11,13 @@ class IsWorkspaceAdminMember(BasePermission):
     allowed_roles = {Member.Role.OWNER, Member.Role.ADMIN}
 
     def has_permission(self, request, view) -> bool:
-        workspace_id = view.kwargs.get('workspace_id')
-        if not request.user or not request.user.is_authenticated or workspace_id is None:
-            return False
+        # Delega a checagem de role a fonte unica em omnichannel.channel_authorization,
+        # para que a logica (bypass de superuser + query de membership) exista num
+        # so lugar. Import local evita ciclo na inicializacao dos apps.
+        from omnichannel.channel_authorization import user_has_workspace_role
 
-        if request.user.is_superuser:
-            return True
-
-        return Member.objects.filter(
-            workspace_id=workspace_id,
-            user=request.user,
-            role__in=self.allowed_roles,
-        ).exists()
+        return user_has_workspace_role(
+            request.user,
+            view.kwargs.get('workspace_id'),
+            self.allowed_roles,
+        )

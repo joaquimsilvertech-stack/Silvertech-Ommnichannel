@@ -267,12 +267,26 @@ def test_collection_rejects_mutating_methods_except_existing_post(method: str) -
     assert response.status_code == status.HTTP_405_METHOD_NOT_ALLOWED
 
 
-@pytest.mark.parametrize('method', ['post', 'put', 'patch', 'delete'])
-def test_detail_is_read_only(method: str) -> None:
+@pytest.mark.parametrize('method', ['post', 'put', 'patch'])
+def test_detail_rejects_mutating_methods_except_delete(method: str) -> None:
     client, _, workspace = _member_client()
     channel = WhatsAppChannelFactory(workspace=workspace)
     response = getattr(client, method)(_detail_url(workspace, channel), {}, format='json')
     assert response.status_code == status.HTTP_405_METHOD_NOT_ALLOWED
+
+
+def test_detail_delete_is_governed_by_rbac_not_method_not_allowed() -> None:
+    # Parte 29: DELETE deixou de ser 405 e passou a ser controlado por RBAC
+    # (REMOVE = OWNER-only). A matriz completa vive em test_whatsapp_channel_remove_api.
+    client, _, workspace = _member_client(role=Member.Role.OWNER)
+    channel = WhatsAppChannelFactory(workspace=workspace)
+    with patch(
+        'omnichannel.whatsapp_channel_management.get_evolution_client',
+    ) as get_client:
+        get_client.return_value = Mock(spec=BaseEvolutionClient)
+        response = client.delete(_detail_url(workspace, channel))
+    assert response.status_code == status.HTTP_204_NO_CONTENT
+    assert not WhatsAppChannel.objects.filter(id=channel.id).exists()
 
 
 def test_collection_and_detail_allow_head_and_options() -> None:

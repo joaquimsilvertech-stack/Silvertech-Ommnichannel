@@ -5,6 +5,7 @@ from uuid import UUID
 from django.conf import settings
 from django.shortcuts import get_object_or_404
 from django.utils.cache import patch_vary_headers
+from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.renderers import JSONRenderer
@@ -13,7 +14,19 @@ from rest_framework.response import Response
 from rest_framework.throttling import SimpleRateThrottle
 from rest_framework.views import APIView
 
+from omnichannel.channel_authorization import (
+    ChannelCapability,
+    HasChannelCapability,
+    resolve_workspace_for_capability,
+)
 from omnichannel.models import WhatsAppChannel
+from omnichannel.whatsapp_channel_management import (
+    SAFE_MANAGEMENT_ERROR_MESSAGE,
+    WhatsAppChannelManagementError,
+    disconnect_whatsapp_channel,
+    remove_whatsapp_channel,
+    restart_whatsapp_channel,
+)
 from omnichannel.whatsapp_channel_provisioning import (
     SAFE_PROVISIONING_ERROR_MESSAGE,
     WhatsAppChannelProvisioningError,
@@ -34,8 +47,7 @@ from omnichannel.whatsapp_channel_serializers import (
     WhatsAppChannelSafeSerializer,
     WhatsAppChannelStatusSerializer,
 )
-from workspaces.models import Member, Workspace
-from workspaces.permissions import IsWorkspaceAdminMember
+from workspaces.models import Workspace
 
 
 class _WhatsAppChannelUserScopeThrottle(SimpleRateThrottle):
@@ -60,8 +72,8 @@ class WhatsAppChannelProvisioningThrottle(_WhatsAppChannelUserScopeThrottle):
     scope = 'whatsapp_channel_provisioning'
 
 
-class WhatsAppChannelQRCodeThrottle(_WhatsAppChannelUserScopeThrottle):
-    scope = 'whatsapp_channel_qr'
+class _WhatsAppChannelScopedResourceThrottle(_WhatsAppChannelUserScopeThrottle):
+    """Throttle por usuario + workspace + canal (para acoes sobre um canal)."""
 
     def get_cache_key(self, request: Request, view: APIView) -> str | None:
         if not request.user or not request.user.is_authenticated:
@@ -72,22 +84,31 @@ class WhatsAppChannelQRCodeThrottle(_WhatsAppChannelUserScopeThrottle):
         return self.cache_format % {'scope': self.scope, 'ident': ident}
 
 
+class WhatsAppChannelQRCodeThrottle(_WhatsAppChannelScopedResourceThrottle):
+    scope = 'whatsapp_channel_qr'
+
+
+class WhatsAppChannelManagementThrottle(_WhatsAppChannelScopedResourceThrottle):
+    scope = 'whatsapp_channel_management'
+
+
 class _WorkspaceWhatsAppChannelAccessMixin:
-    permission_classes = [IsAuthenticated, IsWorkspaceAdminMember]
+    permission_classes = [IsAuthenticated, HasChannelCapability]
+    required_channel_capability = ChannelCapability.VIEW
+
+    def get_required_channel_capability(self, request: Request) -> ChannelCapability:
+        return self.required_channel_capability
 
     def finalize_response(self, request, response, *args, **kwargs):
         finalized = super().finalize_response(request, response, *args, **kwargs)
         return _with_private_no_store(finalized)
 
-    def _get_workspace(self, workspace_id: str) -> Workspace:
-        if self.request.user.is_superuser:
-            return get_object_or_404(Workspace, id=workspace_id)
-        return get_object_or_404(
-            Workspace,
-            id=workspace_id,
-            memberships__user=self.request.user,
-            memberships__role__in={Member.Role.OWNER, Member.Role.ADMIN},
-        )
+    def _get_workspace(
+        self,
+        workspace_id: str,
+        capability: ChannelCapability = ChannelCapability.VIEW,
+    ) -> Workspace:
+        return resolve_workspace_for_capability(self.request, workspace_id, capability)
 
     @staticmethod
     def _get_channel(*, workspace: Workspace, channel_id: UUID) -> WhatsAppChannel:
@@ -106,6 +127,13 @@ class WorkspaceWhatsAppChannelCollectionView(
     provisioning_throttle_scope = 'whatsapp_channel_provisioning'
     read_throttle_scope = 'whatsapp_channel_read'
     http_method_names = ['get', 'post', 'head', 'options']
+
+    def get_required_channel_capability(self, request: Request) -> ChannelCapability:
+        # POST provisiona (CONNECT); demais metodos apenas leem (VIEW). Ambos
+        # exigem {OWNER, ADMIN}, entao o comportamento e identico ao anterior.
+        if request.method == 'POST':
+            return ChannelCapability.CONNECT
+        return ChannelCapability.VIEW
 
     def get_throttles(self):
         self.throttle_scope = (
@@ -191,8 +219,18 @@ class WorkspaceWhatsAppChannelDetailView(
     APIView,
 ):
     throttle_scope = 'whatsapp_channel_read'
-    throttle_classes = [WhatsAppChannelReadThrottle]
-    http_method_names = ['get', 'head', 'options']
+    http_method_names = ['get', 'delete', 'head', 'options']
+
+    def get_required_channel_capability(self, request: Request) -> ChannelCapability:
+        # GET le (VIEW={OWNER,ADMIN}); DELETE remove (REMOVE=OWNER-only).
+        if request.method == 'DELETE':
+            return ChannelCapability.REMOVE
+        return ChannelCapability.VIEW
+
+    def get_throttles(self):
+        if self.request.method == 'DELETE':
+            return [WhatsAppChannelManagementThrottle()]
+        return [WhatsAppChannelReadThrottle()]
 
     def get(self, request: Request, workspace_id: str, channel_id: UUID) -> Response:
         workspace = self._get_workspace(workspace_id)
@@ -203,6 +241,25 @@ class WorkspaceWhatsAppChannelDetailView(
             context={'qr_availability': availability},
         )
         return _with_private_no_store(Response(serializer.data))
+
+    @extend_schema(
+        summary='Remover canal WhatsApp (OWNER-only)',
+        request=None,
+        responses={
+            204: OpenApiResponse(description='Canal removido; conversas viram legado.'),
+            403: OpenApiResponse(description='Sem capability REMOVE (OWNER-only).'),
+            404: OpenApiResponse(description='Canal inexistente ou de outro tenant.'),
+            502: OpenApiResponse(description='Falha segura na Evolution (error_code sanitizado).'),
+        },
+    )
+    def delete(self, request: Request, workspace_id: str, channel_id: UUID) -> Response:
+        workspace = self._get_workspace(workspace_id, ChannelCapability.REMOVE)
+        channel = self._get_channel(workspace=workspace, channel_id=channel_id)
+        try:
+            remove_whatsapp_channel(channel=channel)
+        except WhatsAppChannelManagementError as exc:
+            return _with_private_no_store(_safe_management_error_response(exc))
+        return _with_private_no_store(Response(status=status.HTTP_204_NO_CONTENT))
 
 
 class WorkspaceWhatsAppChannelStatusView(
@@ -250,6 +307,80 @@ class WorkspaceWhatsAppChannelQRCodeView(
             )
         serializer = WhatsAppChannelQRCodeSerializer(result)
         return _with_qr_no_store(Response(serializer.data))
+
+
+class WorkspaceWhatsAppChannelRestartView(
+    _WorkspaceWhatsAppChannelAccessMixin,
+    APIView,
+):
+    required_channel_capability = ChannelCapability.RESTART
+    throttle_classes = [WhatsAppChannelManagementThrottle]
+    http_method_names = ['post', 'options']
+
+    @extend_schema(
+        summary='Reiniciar canal WhatsApp',
+        request=None,
+        responses={
+            200: WhatsAppChannelStatusSerializer,
+            403: OpenApiResponse(description='Sem capability RESTART.'),
+            404: OpenApiResponse(description='Canal inexistente ou de outro tenant.'),
+            409: OpenApiResponse(description='Estado incompativel (provisioning/deleting).'),
+            502: OpenApiResponse(description='Falha segura na Evolution (error_code sanitizado).'),
+        },
+    )
+    def post(self, request: Request, workspace_id: str, channel_id: UUID) -> Response:
+        workspace = self._get_workspace(workspace_id, ChannelCapability.RESTART)
+        channel = self._get_channel(workspace=workspace, channel_id=channel_id)
+        try:
+            channel = restart_whatsapp_channel(channel=channel)
+        except WhatsAppChannelManagementError as exc:
+            return _with_private_no_store(_safe_management_error_response(exc))
+        return _with_private_no_store(_channel_status_response(channel))
+
+
+class WorkspaceWhatsAppChannelDisconnectView(
+    _WorkspaceWhatsAppChannelAccessMixin,
+    APIView,
+):
+    required_channel_capability = ChannelCapability.DISCONNECT
+    throttle_classes = [WhatsAppChannelManagementThrottle]
+    http_method_names = ['post', 'options']
+
+    @extend_schema(
+        summary='Desconectar canal WhatsApp (idempotente)',
+        request=None,
+        responses={
+            200: WhatsAppChannelStatusSerializer,
+            403: OpenApiResponse(description='Sem capability DISCONNECT.'),
+            404: OpenApiResponse(description='Canal inexistente ou de outro tenant.'),
+            409: OpenApiResponse(description='Estado incompativel (provisioning/deleting).'),
+            502: OpenApiResponse(description='Falha segura na Evolution (error_code sanitizado).'),
+        },
+    )
+    def post(self, request: Request, workspace_id: str, channel_id: UUID) -> Response:
+        workspace = self._get_workspace(workspace_id, ChannelCapability.DISCONNECT)
+        channel = self._get_channel(workspace=workspace, channel_id=channel_id)
+        try:
+            channel = disconnect_whatsapp_channel(channel=channel)
+        except WhatsAppChannelManagementError as exc:
+            return _with_private_no_store(_safe_management_error_response(exc))
+        return _with_private_no_store(_channel_status_response(channel))
+
+
+def _channel_status_response(channel: WhatsAppChannel) -> Response:
+    availability = {channel.id: get_channel_qr_availability(channel)}
+    serializer = WhatsAppChannelStatusSerializer(
+        channel,
+        context={'qr_availability': availability},
+    )
+    return Response(serializer.data)
+
+
+def _safe_management_error_response(exc: WhatsAppChannelManagementError) -> Response:
+    return Response(
+        {'detail': SAFE_MANAGEMENT_ERROR_MESSAGE, 'error_code': exc.error_code},
+        status=exc.http_status,
+    )
 
 
 def _with_private_no_store(response: Response) -> Response:

@@ -9,7 +9,9 @@ from omnichannel.views import (
 from omnichannel.whatsapp_channel_views import (
     WorkspaceWhatsAppChannelCollectionView,
     WorkspaceWhatsAppChannelDetailView,
+    WorkspaceWhatsAppChannelDisconnectView,
     WorkspaceWhatsAppChannelQRCodeView,
+    WorkspaceWhatsAppChannelRestartView,
     WorkspaceWhatsAppChannelStatusView,
 )
 
@@ -40,6 +42,16 @@ urlpatterns = [
         '<uuid:workspace_id>/whatsapp-channels/<uuid:channel_id>/status/',
         WorkspaceWhatsAppChannelStatusView.as_view(),
         name='workspace-whatsapp-channel-status',
+    ),
+    path(
+        '<uuid:workspace_id>/whatsapp-channels/<uuid:channel_id>/restart/',
+        WorkspaceWhatsAppChannelRestartView.as_view(),
+        name='workspace-whatsapp-channel-restart',
+    ),
+    path(
+        '<uuid:workspace_id>/whatsapp-channels/<uuid:channel_id>/disconnect/',
+        WorkspaceWhatsAppChannelDisconnectView.as_view(),
+        name='workspace-whatsapp-channel-disconnect',
     ),
     path(
         '<uuid:workspace_id>/whatsapp-channels/<uuid:channel_id>/qr/',
