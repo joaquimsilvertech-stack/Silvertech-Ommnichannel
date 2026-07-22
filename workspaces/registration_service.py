@@ -66,7 +66,10 @@ def register_owner_account(
     Nao provisiona instancia Evolution, nao cria WhatsAppChannel, nao envia
     e-mail e nao eleva `CustomUser.role` de plataforma (mantem o default).
     """
-    normalized_email = User.objects.normalize_email((email or '').strip())
+    # Caixa baixa completa (parte local + dominio): normalize_email so baixa o
+    # dominio, e o login faz match exato. Gravar tudo minusculo garante que
+    # cadastro->login funcione com qualquer caixa digitada.
+    normalized_email = User.objects.normalize_email((email or '').strip()).lower()
     normalized_company_name = (company_name or '').strip()
     first_name, last_name = split_full_name(full_name)
 

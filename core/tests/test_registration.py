@@ -363,7 +363,7 @@ def test_service_is_reusable_outside_the_endpoint() -> None:
         password=STRONG_PASSWORD,
     )
 
-    assert account.user.email == 'Direto@empresa.exemplo'
+    assert account.user.email == 'direto@empresa.exemplo'
     assert account.user.first_name == 'Alguem'
     assert account.user.last_name == 'Da Silva Souza'
     assert account.workspace.slug == 'servico-direto'
@@ -400,6 +400,57 @@ def test_workspace_without_owner_is_still_allowed_for_support() -> None:
     workspace = Workspace.objects.create(name='Sem Owner', slug='sem-owner')
 
     assert workspace.memberships.count() == 0
+
+
+@pytest.mark.django_db
+def test_mixed_case_email_is_persisted_fully_lowercased(client) -> None:
+    response = client.post(
+        REGISTER_URL,
+        _payload(email='Joao@Empresa.com'),
+        format='json',
+    )
+
+    assert response.status_code == status.HTTP_201_CREATED
+    assert response.json()['user']['email'] == 'joao@empresa.com'
+    assert User.objects.filter(email='joao@empresa.com').count() == 1
+    assert User.objects.filter(email='Joao@Empresa.com').count() == 0
+
+
+@pytest.mark.django_db
+def test_login_with_canonical_lowercase_email_works_after_mixed_case_registration(
+    client,
+) -> None:
+    """
+    Bug alvo do micro-fix: quem se cadastra com caixa mista (`Joao@Empresa.com`)
+    deve conseguir logar digitando a forma canonica minuscula. Antes do fix o
+    e-mail era gravado com a caixa original e o match exato do login falhava.
+    """
+    client.post(REGISTER_URL, _payload(email='Joao@Empresa.com'), format='json')
+
+    response = APIClient().post(
+        '/api/auth/token/',
+        {'email': 'joao@empresa.com', 'password': STRONG_PASSWORD},
+        format='json',
+        REMOTE_ADDR='198.51.100.40',
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()['access']
+
+
+@pytest.mark.django_db
+def test_same_email_different_case_still_blocks_duplicate(client) -> None:
+    first = client.post(REGISTER_URL, _payload(email='Joao@Empresa.com'), format='json')
+    second = client.post(
+        REGISTER_URL,
+        _payload(email='joao@empresa.com', company_name='Outra Empresa'),
+        format='json',
+    )
+
+    assert first.status_code == status.HTTP_201_CREATED
+    assert second.status_code == status.HTTP_400_BAD_REQUEST
+    assert 'email' in second.json()
+    assert User.objects.filter(email='joao@empresa.com').count() == 1
 
 
 @pytest.mark.django_db

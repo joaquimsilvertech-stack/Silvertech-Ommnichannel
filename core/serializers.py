@@ -72,7 +72,9 @@ class RegistrationSerializer(serializers.Serializer):
     )
 
     def validate_email(self, value: str) -> str:
-        normalized = User.objects.normalize_email(value.strip())
+        # Caixa baixa completa, identica ao que o servico grava, para que a
+        # checagem e o valor propagado batam com o e-mail persistido.
+        normalized = User.objects.normalize_email(value.strip()).lower()
         if User.objects.filter(email__iexact=normalized).exists():
             raise serializers.ValidationError('Ja existe uma conta com este e-mail.')
         return normalized
