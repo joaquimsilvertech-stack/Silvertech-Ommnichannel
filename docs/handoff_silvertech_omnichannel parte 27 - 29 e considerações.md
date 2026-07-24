@@ -1,6 +1,6 @@
 # Handoff — SilverTech CRM Omnichannel
 
-> Cole este arquivo no início de um chat novo para restaurar o contexto. Ele registra o estado do projeto, o backlog aberto, as decisões tomadas (e seus porquês) e as premissas de código já verificadas. O código-fonte é a fonte de verdade; este documento cobre o que o código **não** conta: decisões não-escritas, itens adiados e onde paramos.
+
 
 ## 0. Como trabalhamos (papel e fluxo)
 
