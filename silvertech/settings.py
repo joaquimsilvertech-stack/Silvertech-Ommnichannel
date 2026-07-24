@@ -71,6 +71,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'rest_framework',
     'drf_spectacular',
+    'drf_spectacular_sidecar',
     'django_filters',
     'rest_framework_simplejwt',
     'encrypted_model_fields',
@@ -214,6 +215,10 @@ SPECTACULAR_SETTINGS = {
     'DESCRIPTION': 'Documentação da API do CRM Omnichannel (incluindo integração WhatsApp via Evolution API).',
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
+    # Assets do Swagger UI servidos localmente ('self'), não de CDN externo,
+    # para respeitar a CSP estrita (default-src 'none'). Ver core/tests/test_swagger_ui_assets.py.
+    'SWAGGER_UI_DIST': 'SIDECAR',
+    'SWAGGER_UI_FAVICON_HREF': 'SIDECAR',
 }
 
 # Simple JWT — tempos de vida padrão para access/refresh (API stateless).

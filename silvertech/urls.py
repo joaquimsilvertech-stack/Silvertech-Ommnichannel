@@ -16,6 +16,7 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.conf import settings
+from django.contrib.staticfiles.urls import staticfiles_urlpatterns
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -50,6 +51,10 @@ urlpatterns = [
 ]
 
 if settings.DEBUG:
+    # Serve /static/ via finders sob ASGI/uvicorn (o auto-serving do runserver não
+    # existe aqui). Necessário para os assets locais do Swagger UI (sidecar) e para
+    # o CSS/JS do Django Debug Toolbar. Produção é assunto separado (WhiteNoise/nginx).
+    urlpatterns += staticfiles_urlpatterns()
     urlpatterns += [
         path('__debug__/', include('debug_toolbar.urls')),
     ]
