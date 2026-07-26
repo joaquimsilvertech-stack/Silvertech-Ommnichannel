@@ -484,8 +484,15 @@ def process_messages_upsert(
     channel: WhatsAppChannel,
     payload: dict[str, Any],
 ) -> None:
+    # O número do contato pode chegar apenas em `sender` (raiz do payload) quando
+    # o remoteJid é @lid ofuscado e não há remoteJidAlt. Propaga-se ao parser.
+    event_sender = payload.get('sender')
     for item in _event_items(payload):
-        _process_messages_upsert_item(channel=channel, item=item)
+        _process_messages_upsert_item(
+            channel=channel,
+            item=item,
+            event_sender=event_sender,
+        )
 
 
 def process_message_status_update(
@@ -531,8 +538,9 @@ def _process_messages_upsert_item(
     *,
     channel: WhatsAppChannel,
     item: object,
+    event_sender: str | None = None,
 ) -> None:
-    parsed, validation_error = _parse_inbound_message(item)
+    parsed, validation_error = _parse_inbound_message(item, event_sender=event_sender)
     external_id = parsed.external_id if parsed is not None else _extract_external_id(item)
     deduplication_material = (
         external_id
@@ -924,6 +932,8 @@ def _event_items(payload: dict[str, Any]) -> list[object]:
 
 def _parse_inbound_message(
     item: object,
+    *,
+    event_sender: str | None = None,
 ) -> tuple[_InboundMessageData | None, str | None]:
     if not isinstance(item, dict):
         return None, 'INVALID_MESSAGE_ITEM'
@@ -954,6 +964,11 @@ def _parse_inbound_message(
         if alternate is None:
             alternate = item.get('remoteJidAlt')
         phone = _normalize_direct_phone_jid(alternate)
+        if phone is None:
+            # A Evolution real não envia remoteJidAlt para @lid; o número do
+            # contato chega em `sender` (raiz do payload). Fallback apenas para
+            # @lid, com a MESMA normalização/validação de qualquer outro número.
+            phone = _normalize_direct_phone_jid(event_sender)
     elif remote_jid_suffix in _DIRECT_INDIVIDUAL_JID_SUFFIXES:
         phone = _normalize_direct_phone_jid(remote_jid_value)
     else:
@@ -1072,7 +1087,18 @@ def _extract_connection_error_code(payload: dict[str, Any]) -> str:
 def _extract_external_id(item: object) -> str | None:
     if not isinstance(item, dict):
         return None
-    for path in (('key', 'id'), ('data', 'key', 'id'), ('message', 'key', 'id'), ('id',)):
+    for path in (
+        ('key', 'id'),
+        ('data', 'key', 'id'),
+        ('message', 'key', 'id'),
+        ('id',),
+        # messages.update real da Evolution v2: id em data.keyId (== key.id do
+        # upsert) e data.messageId. Fallbacks adicionais, sem remover os antigos.
+        ('data', 'keyId'),
+        ('keyId',),
+        ('data', 'messageId'),
+        ('messageId',),
+    ):
         value = _value_at(item, path)
         external_id = _validate_external_id(value)
         if external_id is not None:
