@@ -116,7 +116,8 @@ class EvolutionEventClaim:
 class _InboundMessageData:
     external_id: str
     remote_jid: str
-    phone: str
+    provider_identity: str
+    resolved_phone: str
     body: str
     contact_name: str
     message_type: str | None
@@ -484,15 +485,8 @@ def process_messages_upsert(
     channel: WhatsAppChannel,
     payload: dict[str, Any],
 ) -> None:
-    # O número do contato pode chegar apenas em `sender` (raiz do payload) quando
-    # o remoteJid é @lid ofuscado e não há remoteJidAlt. Propaga-se ao parser.
-    event_sender = payload.get('sender')
     for item in _event_items(payload):
-        _process_messages_upsert_item(
-            channel=channel,
-            item=item,
-            event_sender=event_sender,
-        )
+        _process_messages_upsert_item(channel=channel, item=item)
 
 
 def process_message_status_update(
@@ -538,9 +532,8 @@ def _process_messages_upsert_item(
     *,
     channel: WhatsAppChannel,
     item: object,
-    event_sender: str | None = None,
 ) -> None:
-    parsed, validation_error = _parse_inbound_message(item, event_sender=event_sender)
+    parsed, validation_error = _parse_inbound_message(item)
     external_id = parsed.external_id if parsed is not None else _extract_external_id(item)
     deduplication_material = (
         external_id
@@ -606,7 +599,8 @@ def _create_inbound_message(
 
         route = resolve_inbound_whatsapp_route(
             channel=locked_channel,
-            phone=parsed.phone,
+            provider_identity=parsed.provider_identity,
+            resolved_phone=parsed.resolved_phone,
             contact_name=parsed.contact_name,
         )
         contact = route.contact
@@ -932,8 +926,6 @@ def _event_items(payload: dict[str, Any]) -> list[object]:
 
 def _parse_inbound_message(
     item: object,
-    *,
-    event_sender: str | None = None,
 ) -> tuple[_InboundMessageData | None, str | None]:
     if not isinstance(item, dict):
         return None, 'INVALID_MESSAGE_ITEM'
@@ -960,22 +952,18 @@ def _parse_inbound_message(
     if remote_jid_suffix == 'lid':
         if _normalize_phone_jid(remote_jid_value) is None:
             return None, 'INVALID_REMOTE_JID'
+        provider_identity = remote_jid_value
         alternate = key.get('remoteJidAlt')
         if alternate is None:
             alternate = item.get('remoteJidAlt')
-        phone = _normalize_direct_phone_jid(alternate)
-        if phone is None:
-            # A Evolution real não envia remoteJidAlt para @lid; o número do
-            # contato chega em `sender` (raiz do payload). Fallback apenas para
-            # @lid, com a MESMA normalização/validação de qualquer outro número.
-            phone = _normalize_direct_phone_jid(event_sender)
+        resolved_phone = _normalize_direct_phone_jid(alternate) or ''
     elif remote_jid_suffix in _DIRECT_INDIVIDUAL_JID_SUFFIXES:
-        phone = _normalize_direct_phone_jid(remote_jid_value)
+        resolved_phone = _normalize_direct_phone_jid(remote_jid_value)
+        if resolved_phone is None:
+            return None, 'INVALID_REMOTE_JID'
+        provider_identity = resolved_phone
     else:
         return None, 'UNSUPPORTED_REMOTE_JID'
-
-    if phone is None:
-        return None, 'INVALID_REMOTE_JID'
 
     message = item.get('message')
     if not isinstance(message, dict):
@@ -985,12 +973,12 @@ def _parse_inbound_message(
         return None, 'UNSUPPORTED_MESSAGE_CONTENT'
 
     push_name = item.get('pushName')
-    contact_name = phone
+    contact_name = resolved_phone or provider_identity
     if (
         isinstance(push_name, str)
         and push_name.strip() == push_name
         and push_name
-        and push_name != phone
+        and push_name not in {resolved_phone, provider_identity}
         and _safe_text_value(push_name, 255)
     ):
         contact_name = push_name
@@ -1005,7 +993,8 @@ def _parse_inbound_message(
         _InboundMessageData(
             external_id=external_id,
             remote_jid=remote_jid_value,
-            phone=phone,
+            provider_identity=provider_identity,
+            resolved_phone=resolved_phone,
             body=body,
             contact_name=contact_name,
             message_type=message_type,

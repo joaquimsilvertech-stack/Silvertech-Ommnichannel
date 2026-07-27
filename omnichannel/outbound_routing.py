@@ -10,6 +10,11 @@ from django.core.exceptions import ObjectDoesNotExist
 from crm.models import Contact
 from omnichannel.evolution.types import MAX_INSTANCE_NAME_LENGTH
 from omnichannel.models import Conversation, Message, WhatsAppChannel
+from omnichannel.whatsapp_recipient_validation import (
+    OUTBOUND_RECIPIENT_SELF,
+    OUTBOUND_RECIPIENT_UNRESOLVED,
+    validate_whatsapp_recipient,
+)
 
 WHATSAPP_CONVERSATION_CHANNEL = 'whatsapp'
 
@@ -21,7 +26,7 @@ OUTBOUND_CONVERSATION_CHANNEL_MISSING = 'OUTBOUND_CONVERSATION_CHANNEL_MISSING'
 OUTBOUND_CHANNEL_ROUTE_MISMATCH = 'OUTBOUND_CHANNEL_ROUTE_MISMATCH'
 OUTBOUND_CHANNEL_WORKSPACE_MISMATCH = 'OUTBOUND_CHANNEL_WORKSPACE_MISMATCH'
 OUTBOUND_CONTACT_WORKSPACE_MISMATCH = 'OUTBOUND_CONTACT_WORKSPACE_MISMATCH'
-OUTBOUND_RECIPIENT_INVALID = 'OUTBOUND_RECIPIENT_INVALID'
+OUTBOUND_RECIPIENT_INVALID = OUTBOUND_RECIPIENT_UNRESOLVED
 OUTBOUND_PROVIDER_UNSUPPORTED = 'OUTBOUND_PROVIDER_UNSUPPORTED'
 OUTBOUND_INSTANCE_INVALID = 'OUTBOUND_INSTANCE_INVALID'
 OUTBOUND_CHANNEL_NOT_READY = 'OUTBOUND_CHANNEL_NOT_READY'
@@ -122,9 +127,13 @@ def resolve_outbound_whatsapp_route(
     ):
         _fail(OUTBOUND_INSTANCE_INVALID)
 
-    recipient = contact.phone
-    if not _is_safe_route_value(recipient, max_length=64):
-        _fail(OUTBOUND_RECIPIENT_INVALID)
+    recipient_validation = validate_whatsapp_recipient(
+        recipient=contact.phone,
+        channel_phone_number=channel.phone_number,
+    )
+    if not recipient_validation.is_valid:
+        _fail(recipient_validation.internal_error_code)
+    recipient = recipient_validation.canonical_phone
 
     if channel.status in _TRANSIENT_CHANNEL_STATUSES:
         _fail(OUTBOUND_CHANNEL_NOT_READY, retryable=True)

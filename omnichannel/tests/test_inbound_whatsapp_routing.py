@@ -18,11 +18,19 @@ pytestmark = pytest.mark.django_db
 PHONE = '5511888888888'
 
 
-def _resolve(channel, *, phone: str = PHONE, name: object = 'Contato Seguro'):
+def _resolve(
+    channel,
+    *,
+    phone: str = PHONE,
+    provider_identity: str | None = None,
+    resolved_phone: str | None = None,
+    name: object = 'Contato Seguro',
+):
     with transaction.atomic():
         return resolve_inbound_whatsapp_route(
             channel=channel,
-            phone=phone,
+            provider_identity=provider_identity or phone,
+            resolved_phone=phone if resolved_phone is None else resolved_phone,
             contact_name=name,  # type: ignore[arg-type]
         )
 

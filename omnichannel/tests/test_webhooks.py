@@ -9,6 +9,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from automations.models import Flow
+from crm.models import Contact
 from omnichannel.ai.types import AIProviderResult
 from omnichannel.factories import ContactFactory
 from omnichannel.models import AIObservabilityEvent, Conversation, Message
@@ -167,6 +168,42 @@ def test_ai_schedule_uses_transaction_on_commit(tenant_workspace: Workspace) -> 
             conversation_id=str(inbound.conversation_id),
             source_message_id=str(inbound.id),
         )
+
+
+@pytest.mark.django_db
+def test_legacy_webhook_preserves_lid_and_never_uses_sender_as_contact(
+    tenant_workspace: Workspace,
+) -> None:
+    WorkspaceAIProviderConfigFactory(
+        workspace=tenant_workspace,
+        api_key='sk-must-not-run-for-unresolved-lid',
+    )
+    lid = '123456789012345@lid'
+    payload = _payload(remote_jid=lid, text='Mensagem de identidade LID.')
+    payload['sender'] = '5511000000000'
+    payload['data']['sender'] = '5511000000000'
+
+    with (
+        patch('omnichannel.tasks.process_ai_response.delay') as mock_ai_delay,
+        patch('omnichannel.services.send_whatsapp_message') as mock_send,
+        patch('omnichannel.signals.send_event'),
+    ):
+        process_whatsapp_payload(payload, str(tenant_workspace.id))
+
+    inbound = Message.objects.get(
+        conversation__workspace=tenant_workspace,
+        direction=Message.Direction.INBOUND,
+        body='Mensagem de identidade LID.',
+    )
+    contact = inbound.conversation.contact
+    assert contact.channel_id == lid
+    assert contact.phone == ''
+    assert not Contact.objects.filter(
+        workspace=tenant_workspace,
+        channel_id='5511000000000',
+    ).exists()
+    mock_ai_delay.assert_not_called()
+    mock_send.assert_not_called()
 
 
 @pytest.mark.django_db

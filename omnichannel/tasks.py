@@ -166,6 +166,8 @@ def process_ai_response(
         record_ai_observability_event_safe,
     )
     from omnichannel.services import (
+        AI_SKIP_RECIPIENT_SELF,
+        AI_SKIP_RECIPIENT_UNRESOLVED,
         AI_RETRY_BASE_SECONDS,
         MAX_AI_PROVIDER_ATTEMPTS,
         build_conversation_context_for_ai,
@@ -183,6 +185,10 @@ def process_ai_response(
         mark_ai_processing_succeeded,
         schedule_outbound_message_after_commit,
     )
+    from omnichannel.whatsapp_recipient_validation import (
+        RECIPIENT_IS_CHANNEL_PHONE,
+        validate_conversation_whatsapp_recipient,
+    )
     from workspaces.models import WorkspaceAIProviderConfig
 
     ai_processing_run = None
@@ -195,6 +201,20 @@ def process_ai_response(
             'whatsapp_channel',
         ).get(id=conversation_id)
     except Conversation.DoesNotExist:
+        return None
+
+    recipient_validation = validate_conversation_whatsapp_recipient(conversation)
+    if not recipient_validation.is_valid:
+        _log_ai_task_skip(
+            'Task de IA ignorada: destinatario WhatsApp nao resolvido',
+            conversation=conversation,
+            source_message_id=source_message_id,
+            reason_code=(
+                AI_SKIP_RECIPIENT_SELF
+                if recipient_validation.status == RECIPIENT_IS_CHANNEL_PHONE
+                else AI_SKIP_RECIPIENT_UNRESOLVED
+            ),
+        )
         return None
 
     if conversation.is_human_handoff:
@@ -558,6 +578,10 @@ def send_outbound_whatsapp_message(
         OutboundDeliveryLockError,
         acquire_outbound_delivery_lock,
     )
+    from omnichannel.whatsapp_recipient_validation import (
+        validate_conversation_whatsapp_recipient,
+        validate_whatsapp_recipient,
+    )
     from omnichannel.services import (
         claim_message_delivery_attempt,
         extract_evolution_message_external_id,
@@ -630,6 +654,30 @@ def send_outbound_whatsapp_message(
             if message.status != Message.Status.PENDING:
                 return None
 
+            persisted_channel_id = message.conversation.whatsapp_channel_id
+            expected_channel_id = (
+                str(whatsapp_channel_id)
+                if whatsapp_channel_id is not None
+                else str(persisted_channel_id) if persisted_channel_id is not None else None
+            )
+            recipient_validation = validate_conversation_whatsapp_recipient(
+                message.conversation,
+            )
+            if not recipient_validation.is_valid:
+                local_error = OutboundWhatsAppRoutingError(
+                    recipient_validation.internal_error_code,
+                    retryable=False,
+                )
+                return _handle_outbound_delivery_failure(
+                    task=self,
+                    message=message,
+                    exc=local_error,
+                    error_code=recipient_validation.internal_error_code,
+                    retryable=False,
+                    expected_channel_id=expected_channel_id,
+                    delivery_started_at=perf_counter(),
+                )
+
             message = claim_message_delivery_attempt(message_id=message.id)
             if message is None:
                 current_status = Message.objects.values_list('status', flat=True).get(
@@ -643,12 +691,6 @@ def send_outbound_whatsapp_message(
                     return str(normalized_message_id)
                 return None
 
-            persisted_channel_id = message.conversation.whatsapp_channel_id
-            expected_channel_id = (
-                str(whatsapp_channel_id)
-                if whatsapp_channel_id is not None
-                else str(persisted_channel_id) if persisted_channel_id is not None else None
-            )
             record_ai_observability_event_safe(
                 workspace=message.conversation.workspace,
                 event_type=AIObservabilityEvent.EventType.OUTBOUND_DELIVERY_ATTEMPT,
@@ -684,10 +726,28 @@ def send_outbound_whatsapp_message(
                 )
 
             expected_channel_id = str(route.channel.id)
+            recipient_validation = validate_whatsapp_recipient(
+                recipient=route.contact.phone,
+                channel_phone_number=route.channel.phone_number,
+            )
+            if not recipient_validation.is_valid:
+                local_error = OutboundWhatsAppRoutingError(
+                    recipient_validation.internal_error_code,
+                    retryable=False,
+                )
+                return _handle_outbound_delivery_failure(
+                    task=self,
+                    message=message,
+                    exc=local_error,
+                    error_code=recipient_validation.internal_error_code,
+                    retryable=False,
+                    expected_channel_id=expected_channel_id,
+                    delivery_started_at=delivery_started_at,
+                )
             try:
                 evolution_response = send_whatsapp_message(
                     channel=route.channel,
-                    phone=route.recipient,
+                    phone=recipient_validation.canonical_phone,
                     text=message.body,
                 )
                 external_id = extract_evolution_message_external_id(evolution_response)

@@ -36,6 +36,11 @@ from .services import (
     schedule_outbound_message_after_commit,
 )
 from .tasks import process_whatsapp_webhook_task
+from .whatsapp_recipient_validation import (
+    RECIPIENT_IS_CHANNEL_PHONE,
+    RECIPIENT_UNRESOLVED,
+    validate_conversation_whatsapp_recipient,
+)
 from workspaces.permissions import IsWorkspaceAdminMember
 
 logger = logging.getLogger(__name__)
@@ -188,6 +193,24 @@ class ConversationViewSet(WorkspaceScopedQuerysetMixin, viewsets.ModelViewSet):
         body = input_serializer.validated_data['body']
 
         conversation = self.get_object()
+        recipient_validation = validate_conversation_whatsapp_recipient(conversation)
+        if recipient_validation.status == RECIPIENT_UNRESOLVED:
+            return Response(
+                {
+                    'detail': 'Destinatário WhatsApp não resolvido.',
+                    'error_code': RECIPIENT_UNRESOLVED,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        if recipient_validation.status == RECIPIENT_IS_CHANNEL_PHONE:
+            return Response(
+                {
+                    'detail': 'O destinatário corresponde à própria linha WhatsApp.',
+                    'error_code': RECIPIENT_IS_CHANNEL_PHONE,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
         with transaction.atomic():
             message = create_pending_outbound_message(
                 conversation=conversation,

@@ -18,7 +18,7 @@ class ContactFactory(factory.django.DjangoModelFactory):
 
     workspace = factory.SubFactory(WorkspaceFactory)
     name = factory.Faker('name')
-    phone = factory.Faker('phone_number')
+    phone = factory.Sequence(lambda n: f'5511{900000000 + n:09d}')
     email = factory.Faker('email')
     channel_id = factory.Sequence(lambda n: f'whatsapp-{n}')
     contact_type = Contact.ContactType.LEAD

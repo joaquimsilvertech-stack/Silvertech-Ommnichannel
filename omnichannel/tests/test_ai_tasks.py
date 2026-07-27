@@ -42,6 +42,64 @@ def _run_on_commit_immediately(callback, using=None, robust=False):
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize(
+    ('recipient', 'channel_phone'),
+    [
+        ('', '5511988887777'),
+        ('5511999999999@lid', '5511988887777'),
+        ('cms3:opaque-recipient', '5511988887777'),
+        ('+55 (11) 98888-7777', '5511988887777'),
+    ],
+)
+def test_process_ai_response_blocks_unresolved_or_self_recipient_before_provider(
+    recipient: str,
+    channel_phone: str,
+) -> None:
+    channel = WhatsAppChannelFactory(
+        status=WhatsAppChannel.Status.CONNECTED,
+        phone_number=channel_phone,
+    )
+    conversation = ConversationFactory(
+        workspace=channel.workspace,
+        whatsapp_channel=channel,
+        contact__phone=recipient,
+    )
+    WorkspaceAIProviderConfigFactory(
+        workspace=conversation.workspace,
+        api_key='sk-must-not-be-used',
+    )
+    inbound = MessageFactory(
+        conversation=conversation,
+        direction=Message.Direction.INBOUND,
+        body='Mensagem que não pode disparar IA.',
+    )
+    adapter = _adapter()
+
+    with (
+        patch('omnichannel.ai.registry.get_provider_adapter', return_value=adapter) as mock_registry,
+        patch('omnichannel.services.send_whatsapp_message') as mock_send_whatsapp,
+        patch('omnichannel.tasks.send_outbound_whatsapp_message.delay') as mock_delivery_delay,
+        patch.object(process_ai_response, 'retry') as mock_retry,
+    ):
+        result = process_ai_response.run(
+            str(conversation.id),
+            source_message_id=str(inbound.id),
+        )
+
+    assert result is None
+    assert not Message.objects.filter(
+        conversation=conversation,
+        direction=Message.Direction.OUTBOUND,
+    ).exists()
+    assert not AIProcessingRun.objects.filter(source_message=inbound).exists()
+    mock_registry.assert_not_called()
+    adapter.generate_response.assert_not_called()
+    mock_send_whatsapp.assert_not_called()
+    mock_delivery_delay.assert_not_called()
+    mock_retry.assert_not_called()
+
+
+@pytest.mark.django_db
 def test_process_ai_response_creates_outbound_message_and_schedules_delivery() -> None:
     channel = WhatsAppChannelFactory(status=WhatsAppChannel.Status.CONNECTED)
     conversation = ConversationFactory(
@@ -739,7 +797,7 @@ def test_process_ai_response_with_empty_provider_prompt_does_not_send_empty_syst
     ],
 )
 def test_process_ai_response_provider_errors_do_not_create_or_send(provider_exception, caplog) -> None:
-    conversation = ConversationFactory()
+    conversation = ConversationFactory(contact__phone='5511999999999')
     WorkspaceAIProviderConfigFactory(
         workspace=conversation.workspace,
         api_key='sk-provider-error-key',
@@ -765,7 +823,7 @@ def test_process_ai_response_provider_errors_do_not_create_or_send(provider_exce
 
 @pytest.mark.django_db
 def test_process_ai_response_provider_error_marks_run_failed_without_outbound_or_evolution(caplog) -> None:
-    conversation = ConversationFactory()
+    conversation = ConversationFactory(contact__phone='5511999999999')
     WorkspaceAIProviderConfigFactory(
         workspace=conversation.workspace,
         api_key='sk-source-provider-error-key',
@@ -803,7 +861,7 @@ def test_process_ai_response_provider_error_marks_run_failed_without_outbound_or
 
 @pytest.mark.django_db
 def test_process_ai_response_retryable_provider_error_marks_retrying_and_retries(caplog) -> None:
-    conversation = ConversationFactory()
+    conversation = ConversationFactory(contact__phone='5511999999999')
     WorkspaceAIProviderConfigFactory(
         workspace=conversation.workspace,
         api_key='sk-source-provider-retry-key',
@@ -849,7 +907,7 @@ def test_process_ai_response_retryable_provider_error_marks_retrying_and_retries
 
 @pytest.mark.django_db
 def test_process_ai_response_retry_with_same_run_creates_single_output_message() -> None:
-    conversation = ConversationFactory()
+    conversation = ConversationFactory(contact__phone='5511999999999')
     provider_config = WorkspaceAIProviderConfigFactory(
         workspace=conversation.workspace,
         api_key='sk-retry-success-key',
@@ -899,7 +957,7 @@ def test_process_ai_response_retry_with_same_run_creates_single_output_message()
 
 @pytest.mark.django_db
 def test_process_ai_response_retryable_provider_error_exhausted_marks_failed() -> None:
-    conversation = ConversationFactory()
+    conversation = ConversationFactory(contact__phone='5511999999999')
     provider_config = WorkspaceAIProviderConfigFactory(
         workspace=conversation.workspace,
         api_key='sk-retry-exhausted-key',

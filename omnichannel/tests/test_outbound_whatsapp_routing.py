@@ -25,6 +25,7 @@ from omnichannel.outbound_routing import (
     OUTBOUND_MESSAGE_NOT_WHATSAPP,
     OUTBOUND_PROVIDER_UNSUPPORTED,
     OUTBOUND_RECIPIENT_INVALID,
+    OUTBOUND_RECIPIENT_SELF,
     OutboundWhatsAppRoutingError,
     resolve_outbound_whatsapp_route,
 )
@@ -197,7 +198,16 @@ def test_invalid_instance_name_is_rejected(instance_name: str) -> None:
     _assert_routing_error(_reload(message), OUTBOUND_INSTANCE_INVALID)
 
 
-@pytest.mark.parametrize('recipient', ['', '   ', '5511\n99999999'])
+@pytest.mark.parametrize(
+    'recipient',
+    [
+        '',
+        '   ',
+        '5511\n99999999',
+        '5511999999999@lid',
+        'cms3:opaque-recipient',
+    ],
+)
 def test_invalid_recipient_is_rejected(recipient: str) -> None:
     message = _message_with_route()
     contact = message.conversation.contact
@@ -205,6 +215,15 @@ def test_invalid_recipient_is_rejected(recipient: str) -> None:
     contact.save(update_fields=['phone', 'updated_at'])
 
     _assert_routing_error(_reload(message), OUTBOUND_RECIPIENT_INVALID)
+
+
+def test_channel_phone_recipient_is_rejected() -> None:
+    message = _message_with_route(recipient='+55 (11) 99999-9999')
+    channel = message.conversation.whatsapp_channel
+    channel.phone_number = '5511999999999'
+    channel.save(update_fields=['phone_number', 'updated_at'])
+
+    _assert_routing_error(_reload(message), OUTBOUND_RECIPIENT_SELF)
 
 
 def test_connected_channel_is_sendable() -> None:

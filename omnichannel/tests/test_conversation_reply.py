@@ -118,6 +118,7 @@ def test_reply_with_contact_from_another_workspace_never_sends_in_request(
     owner = make_user_with_membership(workspace, Member.Role.OWNER)
 
     with (
+        patch('omnichannel.tasks.send_outbound_whatsapp_message.delay') as mock_delay,
         patch('omnichannel.services.send_whatsapp_message') as mock_send,
         patch('omnichannel.evolution.EvolutionAPIClient.send_text') as mock_send_text,
         django_capture_on_commit_callbacks(execute=False) as callbacks,
@@ -128,12 +129,96 @@ def test_reply_with_contact_from_another_workspace_never_sends_in_request(
             format='json',
         )
 
-    assert response.status_code == status.HTTP_201_CREATED
-    message = Message.objects.get(id=response.data['id'])
-    assert message.status == Message.Status.PENDING
-    assert len(callbacks) == 1
+    assert response.status_code == status.HTTP_409_CONFLICT
+    assert response.data == {
+        'detail': 'Destinatário WhatsApp não resolvido.',
+        'error_code': 'recipient_unresolved',
+    }
+    assert not Message.objects.filter(conversation=conversation).exists()
+    assert callbacks == []
+    mock_delay.assert_not_called()
     mock_send.assert_not_called()
     mock_send_text.assert_not_called()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    'recipient',
+    [
+        '',
+        '5511999999999@lid',
+        'cms3:opaque-recipient',
+    ],
+)
+def test_reply_blocks_unresolved_recipient_before_persisting_or_scheduling(
+    recipient: str,
+    django_capture_on_commit_callbacks,
+) -> None:
+    channel = WhatsAppChannelFactory(status=WhatsAppChannel.Status.CONNECTED)
+    conversation = ConversationFactory(
+        workspace=channel.workspace,
+        whatsapp_channel=channel,
+        contact__phone=recipient,
+    )
+    owner = make_user_with_membership(channel.workspace, Member.Role.OWNER)
+
+    with (
+        patch('omnichannel.tasks.send_outbound_whatsapp_message.delay') as mock_delay,
+        patch('omnichannel.services.send_whatsapp_message') as mock_send,
+        django_capture_on_commit_callbacks(execute=False) as callbacks,
+    ):
+        response = auth_client_for(owner).post(
+            _reply_url(conversation.id),
+            {'body': 'Não deve ser persistida.'},
+            format='json',
+        )
+
+    assert response.status_code == status.HTTP_409_CONFLICT
+    assert response.data == {
+        'detail': 'Destinatário WhatsApp não resolvido.',
+        'error_code': 'recipient_unresolved',
+    }
+    assert not Message.objects.filter(conversation=conversation).exists()
+    assert callbacks == []
+    mock_delay.assert_not_called()
+    mock_send.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_reply_blocks_channel_phone_before_persisting_or_scheduling(
+    django_capture_on_commit_callbacks,
+) -> None:
+    channel = WhatsAppChannelFactory(
+        status=WhatsAppChannel.Status.CONNECTED,
+        phone_number='5511988887777',
+    )
+    conversation = ConversationFactory(
+        workspace=channel.workspace,
+        whatsapp_channel=channel,
+        contact__phone='+55 (11) 98888-7777',
+    )
+    owner = make_user_with_membership(channel.workspace, Member.Role.OWNER)
+
+    with (
+        patch('omnichannel.tasks.send_outbound_whatsapp_message.delay') as mock_delay,
+        patch('omnichannel.services.send_whatsapp_message') as mock_send,
+        django_capture_on_commit_callbacks(execute=False) as callbacks,
+    ):
+        response = auth_client_for(owner).post(
+            _reply_url(conversation.id),
+            {'body': 'Não deve retornar à própria linha.'},
+            format='json',
+        )
+
+    assert response.status_code == status.HTTP_409_CONFLICT
+    assert response.data == {
+        'detail': 'O destinatário corresponde à própria linha WhatsApp.',
+        'error_code': 'recipient_is_channel_phone',
+    }
+    assert not Message.objects.filter(conversation=conversation).exists()
+    assert callbacks == []
+    mock_delay.assert_not_called()
+    mock_send.assert_not_called()
 
 
 @pytest.mark.django_db

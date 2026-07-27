@@ -101,6 +101,34 @@ def test_lid_uses_confirmed_alternate_phone_jid() -> None:
     assert Contact.objects.get(workspace=channel.workspace).phone == '5511777777777'
 
 
+def test_unresolved_lid_is_persisted_but_never_schedules_ai_or_outbound(
+    django_capture_on_commit_callbacks,
+) -> None:
+    channel = WhatsAppChannelFactory()
+    WorkspaceAIProviderConfigFactory(
+        workspace=channel.workspace,
+        is_active=True,
+        api_key='sk-must-not-run-for-unresolved-lid',
+    )
+    item = _item()
+    item['key']['remoteJid'] = '123456789012345@lid'
+
+    with (
+        patch('omnichannel.tasks.process_ai_response.delay') as ai_task,
+        patch('omnichannel.services.send_whatsapp_message') as mock_send,
+        django_capture_on_commit_callbacks(execute=True),
+    ):
+        process_evolution_channel_event(channel=channel, payload=_payload(item))
+
+    contact = Contact.objects.get(workspace=channel.workspace)
+    message = Message.objects.get(conversation__whatsapp_channel=channel)
+    assert contact.channel_id == '123456789012345@lid'
+    assert contact.phone == ''
+    assert message.direction == Message.Direction.INBOUND
+    ai_task.assert_not_called()
+    mock_send.assert_not_called()
+
+
 def test_c_us_individual_jid_is_supported() -> None:
     channel = WhatsAppChannelFactory()
     item = _item()
@@ -216,24 +244,6 @@ def test_list_processes_new_items_and_skips_duplicate_independently() -> None:
         (
             lambda item: item['key'].__setitem__('remoteJid', '5511999999999@unknown'),
             'UNSUPPORTED_REMOTE_JID',
-        ),
-        (
-            lambda item: item['key'].__setitem__('remoteJid', '123456789012345@lid'),
-            'INVALID_REMOTE_JID',
-        ),
-        (
-            lambda item: (
-                item['key'].__setitem__('remoteJid', '123456789012345@lid'),
-                item['key'].__setitem__('remoteJidAlt', '123456789012345@lid'),
-            ),
-            'INVALID_REMOTE_JID',
-        ),
-        (
-            lambda item: (
-                item['key'].__setitem__('remoteJid', '123456789012345@lid'),
-                item['key'].__setitem__('remoteJidAlt', '5511999999999@g.us'),
-            ),
-            'INVALID_REMOTE_JID',
         ),
         (lambda item: item.__setitem__('message', {'conversation': ''}), 'UNSUPPORTED_MESSAGE_CONTENT'),
         (lambda item: item.__setitem__('message', {'imageMessage': {}}), 'UNSUPPORTED_MESSAGE_CONTENT'),

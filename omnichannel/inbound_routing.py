@@ -9,6 +9,10 @@ from django.db.models import Q
 
 from crm.models import Contact
 from omnichannel.models import Conversation, WhatsAppChannel
+from omnichannel.whatsapp_recipient_validation import (
+    RECIPIENT_IS_CHANNEL_PHONE,
+    validate_whatsapp_recipient,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,32 +28,78 @@ class InboundWhatsAppRoute:
 def resolve_inbound_whatsapp_route(
     *,
     channel: WhatsAppChannel,
-    phone: str,
+    provider_identity: str,
+    resolved_phone: str,
     contact_name: str,
 ) -> InboundWhatsAppRoute:
     """Resolve a rota inbound usando somente a identidade do canal bloqueado."""
-    workspace_id = channel.workspace_id
-    safe_contact_name = _safe_contact_name(contact_name, phone)
-    contact = _resolve_contact(
-        workspace_id=workspace_id,
-        phone=phone,
-        contact_name=safe_contact_name,
+    contact = resolve_inbound_whatsapp_contact(
+        workspace_id=channel.workspace_id,
+        provider_identity=provider_identity,
+        resolved_phone=resolved_phone,
+        contact_name=contact_name,
+        channel_phone_number=channel.phone_number,
     )
     conversation = _resolve_conversation(channel=channel, contact=contact)
     return InboundWhatsAppRoute(contact=contact, conversation=conversation)
 
 
-def _resolve_contact(*, workspace_id, phone: str, contact_name: str) -> Contact:
-    contact = _get_exact_contact(workspace_id=workspace_id, phone=phone)
+def resolve_inbound_whatsapp_contact(
+    *,
+    workspace_id,
+    provider_identity: str,
+    resolved_phone: str,
+    contact_name: str,
+    channel_phone_number: str = '',
+) -> Contact:
+    """Resolve Contact sem confundir identidade do provider com telefone."""
+    recipient_validation = validate_whatsapp_recipient(
+        recipient=resolved_phone,
+        channel_phone_number=channel_phone_number,
+    )
+    safe_resolved_phone = (
+        recipient_validation.canonical_phone
+        if recipient_validation.is_valid
+        else ''
+    )
+    if recipient_validation.status == RECIPIENT_IS_CHANNEL_PHONE:
+        logger.warning(
+            'Telefone resolvido inbound corresponde a linha do canal',
+            extra={
+                'workspace_id': str(workspace_id),
+                'error_code': 'INBOUND_RECIPIENT_IS_CHANNEL_PHONE',
+            },
+        )
+
+    safe_contact_name = _safe_contact_name(
+        contact_name,
+        provider_identity=provider_identity,
+        resolved_phone=safe_resolved_phone,
+    )
+    contact = _get_exact_contact(
+        workspace_id=workspace_id,
+        provider_identity=provider_identity,
+    )
     if contact is None:
-        candidate = _get_unclaimed_contact(workspace_id=workspace_id, phone=phone)
+        candidate = None
+        if provider_identity == safe_resolved_phone:
+            candidate = _get_unclaimed_contact(
+                workspace_id=workspace_id,
+                resolved_phone=safe_resolved_phone,
+            )
         if candidate is not None:
             try:
                 with transaction.atomic():
-                    _claim_contact_identity(contact=candidate, phone=phone)
+                    _claim_contact_identity(
+                        contact=candidate,
+                        provider_identity=provider_identity,
+                    )
                 contact = candidate
             except IntegrityError:
-                contact = _get_exact_contact(workspace_id=workspace_id, phone=phone)
+                contact = _get_exact_contact(
+                    workspace_id=workspace_id,
+                    provider_identity=provider_identity,
+                )
                 if contact is None:
                     raise
         else:
@@ -57,63 +107,92 @@ def _resolve_contact(*, workspace_id, phone: str, contact_name: str) -> Contact:
                 with transaction.atomic():
                     contact = _create_contact_identity(
                         workspace_id=workspace_id,
-                        phone=phone,
-                        contact_name=contact_name,
+                        provider_identity=provider_identity,
+                        resolved_phone=safe_resolved_phone,
+                        contact_name=safe_contact_name,
                     )
             except IntegrityError:
-                contact = _get_exact_contact(workspace_id=workspace_id, phone=phone)
+                contact = _get_exact_contact(
+                    workspace_id=workspace_id,
+                    provider_identity=provider_identity,
+                )
                 if contact is None:
                     raise
 
-    _synchronize_contact(contact=contact, phone=phone, contact_name=contact_name)
+    _synchronize_contact(
+        contact=contact,
+        provider_identity=provider_identity,
+        resolved_phone=safe_resolved_phone,
+        contact_name=safe_contact_name,
+    )
     return contact
 
 
-def _get_exact_contact(*, workspace_id, phone: str) -> Contact | None:
+def _get_exact_contact(*, workspace_id, provider_identity: str) -> Contact | None:
     try:
         return Contact.objects.select_for_update().get(
             workspace_id=workspace_id,
-            channel_id=phone,
+            channel_id=provider_identity,
         )
     except Contact.DoesNotExist:
         return None
 
 
-def _get_unclaimed_contact(*, workspace_id, phone: str) -> Contact | None:
+def _get_unclaimed_contact(*, workspace_id, resolved_phone: str) -> Contact | None:
     return (
         Contact.objects.select_for_update()
-        .filter(workspace_id=workspace_id, phone=phone)
+        .filter(workspace_id=workspace_id, phone=resolved_phone)
         .filter(Q(channel_id__isnull=True) | Q(channel_id=''))
         .order_by('created_at', 'id')
         .first()
     )
 
 
-def _claim_contact_identity(*, contact: Contact, phone: str) -> None:
-    contact.channel_id = phone
+def _claim_contact_identity(*, contact: Contact, provider_identity: str) -> None:
+    contact.channel_id = provider_identity
     contact.save(update_fields=['channel_id', 'updated_at'])
 
 
 def _create_contact_identity(
     *,
     workspace_id,
-    phone: str,
+    provider_identity: str,
+    resolved_phone: str,
     contact_name: str,
 ) -> Contact:
     return Contact.objects.create(
         workspace_id=workspace_id,
-        phone=phone,
-        channel_id=phone,
+        phone=resolved_phone,
+        channel_id=provider_identity,
         name=contact_name,
     )
 
 
-def _synchronize_contact(*, contact: Contact, phone: str, contact_name: str) -> None:
+def _synchronize_contact(
+    *,
+    contact: Contact,
+    provider_identity: str,
+    resolved_phone: str,
+    contact_name: str,
+) -> None:
     update_fields: list[str] = []
-    has_placeholder_name = _is_placeholder_name(contact=contact, phone=phone)
-    if contact.phone != phone:
-        contact.phone = phone
+    has_placeholder_name = _is_placeholder_name(
+        contact=contact,
+        provider_identity=provider_identity,
+        resolved_phone=resolved_phone,
+    )
+    if not contact.phone and resolved_phone:
+        contact.phone = resolved_phone
         update_fields.append('phone')
+    elif contact.phone and resolved_phone and contact.phone != resolved_phone:
+        logger.warning(
+            'Telefone inbound conflita com identidade existente',
+            extra={
+                'workspace_id': str(contact.workspace_id),
+                'contact_id': str(contact.id),
+                'error_code': 'INBOUND_PHONE_CONFLICT',
+            },
+        )
 
     if has_placeholder_name and contact.name != contact_name:
         contact.name = contact_name
@@ -123,22 +202,34 @@ def _synchronize_contact(*, contact: Contact, phone: str, contact_name: str) -> 
         contact.save(update_fields=[*update_fields, 'updated_at'])
 
 
-def _is_placeholder_name(*, contact: Contact, phone: str) -> bool:
+def _is_placeholder_name(
+    *,
+    contact: Contact,
+    provider_identity: str,
+    resolved_phone: str,
+) -> bool:
     current_name = contact.name or ''
     return not current_name or current_name in {
-        phone,
+        provider_identity,
+        resolved_phone,
         contact.phone,
         contact.channel_id or '',
     }
 
 
-def _safe_contact_name(value: object, phone: str) -> str:
+def _safe_contact_name(
+    value: object,
+    *,
+    provider_identity: str,
+    resolved_phone: str,
+) -> str:
+    fallback = resolved_phone or provider_identity
     if not isinstance(value, str):
-        return phone
+        return fallback
     if not value or value != value.strip() or len(value) > 255:
-        return phone
+        return fallback
     if any(unicodedata.category(character) == 'Cc' for character in value):
-        return phone
+        return fallback
     return value
 
 

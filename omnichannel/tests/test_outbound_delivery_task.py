@@ -37,6 +37,10 @@ from omnichannel.outbound_routing import (
     OUTBOUND_CONVERSATION_CHANNEL_MISSING,
 )
 from omnichannel.tasks import send_outbound_whatsapp_message
+from omnichannel.whatsapp_recipient_validation import (
+    OUTBOUND_RECIPIENT_SELF,
+    OUTBOUND_RECIPIENT_UNRESOLVED,
+)
 from workspaces.factories import WorkspaceFactory
 
 
@@ -239,6 +243,69 @@ def test_send_outbound_whatsapp_message_failed_status_is_not_retried() -> None:
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize(
+    'recipient',
+    [
+        '',
+        '5511999999999@lid',
+        'cms3:opaque-recipient',
+    ],
+)
+def test_send_outbound_whatsapp_message_blocks_unresolved_recipient_without_attempt_or_retry(
+    recipient: str,
+) -> None:
+    message = _outbound_message(
+        phone=recipient,
+        send_attempt_count=2,
+    )
+
+    with (
+        patch('omnichannel.services.send_whatsapp_message') as mock_send,
+        patch.object(send_outbound_whatsapp_message, 'retry') as mock_retry,
+    ):
+        result = send_outbound_whatsapp_message.run(str(message.id))
+
+    message.refresh_from_db()
+    assert result == str(message.id)
+    assert message.status == Message.Status.FAILED
+    assert message.send_error_code == OUTBOUND_RECIPIENT_UNRESOLVED
+    assert message.send_attempt_count == 2
+    assert message.last_send_attempt_at is None
+    assert message.next_send_retry_at is None
+    mock_send.assert_not_called()
+    mock_retry.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_send_outbound_whatsapp_message_blocks_channel_phone_without_attempt_or_retry() -> None:
+    channel = WhatsAppChannelFactory(
+        status=WhatsAppChannel.Status.CONNECTED,
+        phone_number='5511988887777',
+    )
+    message = _outbound_message(
+        channel=channel,
+        phone='+55 (11) 98888-7777',
+        send_attempt_count=2,
+    )
+
+    with (
+        patch('omnichannel.services.send_whatsapp_message') as mock_send,
+        patch.object(send_outbound_whatsapp_message, 'retry') as mock_retry,
+    ):
+        result = send_outbound_whatsapp_message.run(str(message.id))
+
+    message.refresh_from_db()
+    assert result == str(message.id)
+    assert message.status == Message.Status.FAILED
+    assert message.send_error_code == OUTBOUND_RECIPIENT_SELF
+    assert message.send_attempt_count == 2
+    assert message.last_send_attempt_at is None
+    assert message.next_send_retry_at is None
+    mock_send.assert_not_called()
+    mock_retry.assert_not_called()
+
+
+@pytest.mark.django_db
 @override_settings(EVOLUTION_INSTANCE_NAME='legacy-global-must-not-be-used')
 def test_legacy_task_call_derives_channel_without_global_fallback() -> None:
     channel = WhatsAppChannelFactory(
@@ -342,7 +409,10 @@ def test_channels_from_different_workspaces_remain_isolated() -> None:
 @pytest.mark.django_db
 @override_settings(EVOLUTION_INSTANCE_NAME='legacy-global-must-not-be-used')
 def test_conversation_without_channel_fails_without_global_fallback() -> None:
-    conversation = ConversationFactory(whatsapp_channel=None)
+    conversation = ConversationFactory(
+        whatsapp_channel=None,
+        contact__phone='5511999999999',
+    )
     message = MessageFactory(
         conversation=conversation,
         direction=Message.Direction.OUTBOUND,

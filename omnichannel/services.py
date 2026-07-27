@@ -21,8 +21,8 @@ from omnichannel.ai.exceptions import (
     AIProviderUnavailableError,
     UnsupportedAIProviderError,
 )
-from crm.models import Contact
 from omnichannel.ai.registry import is_provider_supported
+from omnichannel.inbound_routing import resolve_inbound_whatsapp_contact
 from workspaces.models import Workspace, WorkspaceAIProviderConfig
 
 from .evolution import (
@@ -47,6 +47,10 @@ from .models import (
     WhatsAppChannel,
 )
 from .observability import record_ai_observability_event_safe
+from .whatsapp_recipient_validation import (
+    RECIPIENT_IS_CHANNEL_PHONE,
+    validate_conversation_whatsapp_recipient,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +65,8 @@ AI_SKIP_MESSAGE_FROM_ME = 'MESSAGE_FROM_ME'
 AI_SKIP_UNSUPPORTED_GROUP_MESSAGE = 'UNSUPPORTED_GROUP_MESSAGE'
 AI_SKIP_EMPTY_CONTENT = 'EMPTY_CONTENT'
 AI_SKIP_NON_PROCESSABLE_CONTENT = 'NON_PROCESSABLE_CONTENT'
+AI_SKIP_RECIPIENT_UNRESOLVED = 'RECIPIENT_UNRESOLVED'
+AI_SKIP_RECIPIENT_SELF = 'RECIPIENT_IS_CHANNEL_PHONE'
 NON_PROCESSABLE_MESSAGE_TYPES = {
     'audioMessage',
     'documentMessage',
@@ -175,9 +181,52 @@ def is_retryable_evolution_error(exc: Exception) -> bool:
     return isinstance(exc, EvolutionAPIError) and bool(exc.retryable)
 
 
-def _normalize_whatsapp_jid(remote_jid: str) -> str:
-    """Remove o sufixo do JID e devolve apenas o numero."""
-    return remote_jid.split('@', maxsplit=1)[0]
+def _resolve_legacy_whatsapp_identity(
+    remote_jid: object,
+    *,
+    remote_jid_alt: object = None,
+) -> tuple[str, str] | None:
+    """Separa identidade do provider e telefone no webhook legado."""
+    if (
+        not isinstance(remote_jid, str)
+        or not remote_jid
+        or remote_jid != remote_jid.strip()
+        or remote_jid.count('@') != 1
+    ):
+        return None
+
+    local, suffix = remote_jid.rsplit('@', maxsplit=1)
+    if not local or not suffix:
+        return None
+
+    if suffix == 'lid':
+        if re.fullmatch(r'\d{8,20}', local) is None:
+            return None
+        resolved_phone = _normalize_legacy_direct_phone_jid(remote_jid_alt) or ''
+        return remote_jid, resolved_phone
+
+    if suffix not in {'s.whatsapp.net', 'c.us'}:
+        return None
+    resolved_phone = _normalize_legacy_direct_phone_jid(remote_jid)
+    if resolved_phone is None:
+        return None
+    return resolved_phone, resolved_phone
+
+
+def _normalize_legacy_direct_phone_jid(value: object) -> str | None:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or value.count('@') != 1
+    ):
+        return None
+    local, suffix = value.rsplit('@', maxsplit=1)
+    if suffix not in {'s.whatsapp.net', 'c.us'}:
+        return None
+    local = local.split(':', maxsplit=1)[0]
+    candidate = local.lstrip('+')
+    return candidate if re.fullmatch(r'\d{8,20}', candidate) else None
 
 
 def _extract_evolution_text(message: dict[str, Any]) -> str | None:
@@ -231,6 +280,15 @@ def should_schedule_ai_response(
 
     if conversation.is_human_handoff:
         return False, AI_SKIP_CONVERSATION_HANDOFF
+
+    recipient_validation = validate_conversation_whatsapp_recipient(conversation)
+    if not recipient_validation.is_valid:
+        reason_code = (
+            AI_SKIP_RECIPIENT_SELF
+            if recipient_validation.status == RECIPIENT_IS_CHANNEL_PHONE
+            else AI_SKIP_RECIPIENT_UNRESOLVED
+        )
+        return False, reason_code
 
     provider_config = (
         WorkspaceAIProviderConfig.objects.filter(
@@ -888,7 +946,8 @@ def handle_inbound_ai_scheduling(
 def _upsert_inbound_message(
     *,
     workspace_id: str,
-    phone: str,
+    provider_identity: str,
+    resolved_phone: str,
     contact_name: str,
     body: str,
     external_id: str | None,
@@ -909,17 +968,12 @@ def _upsert_inbound_message(
             )
             return
 
-        contact, created = Contact.objects.get_or_create(
-            workspace=workspace,
-            phone=phone,
-            defaults={
-                'name': contact_name,
-                'channel_id': phone,
-            },
+        contact = resolve_inbound_whatsapp_contact(
+            workspace_id=workspace.id,
+            provider_identity=provider_identity,
+            resolved_phone=resolved_phone,
+            contact_name=contact_name,
         )
-        if not created and contact.name != contact_name and contact_name != phone:
-            contact.name = contact_name
-            contact.save(update_fields=['name', 'updated_at'])
 
         conversation = Conversation.objects.filter(
             workspace_id=workspace_id,
@@ -1015,13 +1069,23 @@ def _process_evolution_message(data: dict[str, Any], workspace_id: str) -> None:
         )
         return
 
-    phone = _normalize_whatsapp_jid(remote_jid)
-    contact_name = str(data.get('pushName') or phone)
+    remote_jid_alt = key.get('remoteJidAlt')
+    if remote_jid_alt is None:
+        remote_jid_alt = data.get('remoteJidAlt')
+    identity = _resolve_legacy_whatsapp_identity(
+        remote_jid,
+        remote_jid_alt=remote_jid_alt,
+    )
+    if identity is None:
+        return
+    provider_identity, resolved_phone = identity
+    contact_name = str(data.get('pushName') or resolved_phone or provider_identity)
     external_id = key.get('id')
 
     _upsert_inbound_message(
         workspace_id=workspace_id,
-        phone=phone,
+        provider_identity=provider_identity,
+        resolved_phone=resolved_phone,
         contact_name=contact_name,
         body=body,
         external_id=str(external_id) if external_id else None,
