@@ -73,27 +73,11 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Normalize requirements encoding
-        # O requirements.txt local pode estar em UTF-16; normalizamos no runner.
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          source = Path("requirements.txt")
-          raw = source.read_bytes()
-          try:
-              text = raw.decode("utf-8-sig")
-          except UnicodeDecodeError:
-              text = raw.decode("utf-16")
-
-          Path("/tmp/requirements-ci.txt").write_text(text, encoding="utf-8")
-          PY
-
       - name: Install dependencies
         # Instala dependencias da aplicacao e ferramentas de teste/cobertura.
         run: |
           python -m pip install --upgrade pip
-          pip install -r /tmp/requirements-ci.txt
+          pip install -r requirements.txt
           pip install pytest pytest-django pytest-cov factory_boy
 
       - name: Run migrations
