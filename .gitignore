@@ -1,4 +1,4 @@
-# Ambientes Virtuais 
+# Ambientes Virtuais
 venv/
 ENV/
 env/
@@ -6,6 +6,7 @@ env/
 # Python cache
 __pycache__/
 *.py[cod]
+*.pyc
 
 # Banco de dados local (SQLite)
 *.sqlite3
@@ -23,6 +24,9 @@ __pycache__/
 !.env.example
 .env.local
 
+# Cobertura de testes
+.coverage
+
 # Uploads de usuários (Fotos/Documentos)
 media/
 
@@ -35,24 +39,21 @@ staticfiles/
 # Front-end
 node_modules/
 dist/
-
-# Pasta do Cursor (algumas configurações locais)
-.cursor/
-
-.ngrok.exe/
-.ngrok/
-ngrok.exe
-
-# Ignorar dependencias e builds do Frontend
 frontend/node_modules/
 frontend/dist/
 frontend/.package-lock.json
 
-# Ignorar ambientes virtuais e cache do Backend Python (caso ainda nao tenha)
-venv/
-__pycache__/
-*.pyc
-.env
-.env.*
-!.env.example
-.coverage
+# Pasta do Cursor (algumas configurações locais)
+.cursor/
+
+# ngrok
+.ngrok.exe/
+.ngrok/
+ngrok.exe
+
+# Backups e artefatos locais do upgrade da Evolution (NUNCA versionar)
+# O evolution_pg_backup.tar.gz contem dump real do banco (conversas/sessao WhatsApp)
+*.tar.gz
+*.bak
+docker-compose.yml.bak
+evolution_*_backup.*

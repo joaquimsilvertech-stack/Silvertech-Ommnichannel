@@ -18,7 +18,7 @@ services:
     restart: always
 
   evolution:
-    image: atendai/evolution-api:latest
+    image: evoapicloud/evolution-api:v2.3.7
     container_name: silvertech_evolution
     ports:
       - "8080:8080"
