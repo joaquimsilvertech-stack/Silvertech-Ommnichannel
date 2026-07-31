@@ -11,6 +11,7 @@ from omnichannel.whatsapp_channel_views import (
     WorkspaceWhatsAppChannelDetailView,
     WorkspaceWhatsAppChannelDisconnectView,
     WorkspaceWhatsAppChannelQRCodeView,
+    WorkspaceWhatsAppChannelReconnectView,
     WorkspaceWhatsAppChannelRestartView,
     WorkspaceWhatsAppChannelStatusView,
 )
@@ -47,6 +48,11 @@ urlpatterns = [
         '<uuid:workspace_id>/whatsapp-channels/<uuid:channel_id>/restart/',
         WorkspaceWhatsAppChannelRestartView.as_view(),
         name='workspace-whatsapp-channel-restart',
+    ),
+    path(
+        '<uuid:workspace_id>/whatsapp-channels/<uuid:channel_id>/reconnect/',
+        WorkspaceWhatsAppChannelReconnectView.as_view(),
+        name='workspace-whatsapp-channel-reconnect',
     ),
     path(
         '<uuid:workspace_id>/whatsapp-channels/<uuid:channel_id>/disconnect/',

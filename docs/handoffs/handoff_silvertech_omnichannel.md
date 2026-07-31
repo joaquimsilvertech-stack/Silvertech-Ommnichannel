@@ -2,7 +2,7 @@
 
 > **Como usar este documento.** Cole-o no início de um chat novo para restaurar o contexto do projeto. Ele registra o estado atual, as decisões tomadas (e seus porquês), o backlog aberto e as premissas de código já verificadas. **O código-fonte é a fonte de verdade**; este documento cobre o que o código *não* conta: decisões não-escritas, itens adiados e onde paramos. Destinado a qualquer assistente de IA (incluindo Claude Code em chat limpo, que só enxerga o repositório local).
 >
-> **Última atualização:** sessão de 29/07/2026 — **upgrade da Evolution 2.2.3 → 2.3.7 resolveu o BLOQUEADOR Nº 1 (LID/outbound)**. Ver §9 (registro desta sessão), §8 (itens refutados/atualizados) e §3 para o estado por parte. Antes disso: micro-fix do Swagger UI (`a11e8c2`).
+> **Última atualização:** sessão de 30/07/2026 — **WhatsApp bidirecional validado ao vivo de ponta a ponta** (inbound + outbound + delivery-status na 2.3.7, ver §9 e Adendo). Bloqueador Nº 1 encerrado. Também nesta sessão: incidente de git resolvido (§11) e **prompt da Parte 30 (reconnect) pronto** para execução (§12). Próxima parte: **Parte 30** (reconnect/refresh-QR).
 
 ---
 
@@ -89,7 +89,9 @@ CRM Omnichannel SaaS **multi-tenant por Workspace**. Objetivo do trilho atual: t
 - **Swagger UI local + CSP preservada** (`a11e8c2`): sidecar + serving de estáticos sob ASGI. Ver §4.
 - **Correção de contrato da Evolution — inbound `@lid` + status `keyId`** (`d1f92eb`, validado, na master). Descoberto em smoke real. Dois bugs 🔴 que descartavam todo inbound e todo status: (1) `messages.upsert` com `remoteJid @lid` sem `remoteJidAlt` → agora usa `payload.sender` como fallback (contato nasce com o número real, nunca com o `@lid`); (2) `messages.update` com id em `data.keyId`/`messageId` → paths adicionados a `_extract_external_id`. Compat retroativa preservada (`@s.whatsapp.net`, `remoteJidAlt`, `key.id`). +13 testes com os payloads reais como fixtures; suíte 1516→1529. **Validação do arquiteto executada:** check limpo, sem migration, omnichannel 1149 passed, sem regressão. **Descoberta de escopo (ver §8):** o Fix 2 resolve o rastreio de status das mensagens **outbound** (o caso de produto principal); marcar *leitura de mensagens inbound* ficou deliberadamente fora (o `_update_outbound_message` filtra `direction=OUTBOUND`, blindado por `test_inbound_message_is_never_updated`) — é decisão de produto, não bug.
 
-**Próxima parte planejada: ainda a decidir** entre as candidatas de §5 (recomendação de ordem lá).
+**Próxima parte planejada: Parte 30 (Desconectar/reconectar/excluir canal).** ⚠️ **Esclarecimento apurado em 29/07:** `restart`/`disconnect`/`remove(DELETE)` **já existem no código** — mas foram entregues **dentro da Parte 29** (a "superfície de gestão" do prompt da P29), **não** são a Parte 30. O que a Parte 30 tem de **novo e ainda inexistente**: **`reconnect`** e **`refresh-qr`** (trazer canal `DISCONNECTED` → `WAITING_QR` pelo SilverTech — é a lacuna do §8, confirmada por grep: não há `reconnect`/`refresh-qr` no código; o `/qr/` atual só lê), e a **decisão archive vs. hard-delete** (o roadmap pede "preferir soft delete/arquivamento"; hoje o `DELETE` faz **hard delete** — apaga a linha, `SET_NULL` nas conversas). Ver candidatas de §5 se preferir intercalar; mas a Parte 30 é a próxima em ordem de roadmap.
+
+> **Nota de nomenclatura:** o fix de fixtures da 2.3.7 (derivado do upgrade — ver §9) **não é uma Parte do roadmap**; é um fix de consolidação de testes (arquivo `fix_fixtures_reais_evolution_237.md`). Não confundir com a Parte 30.
 
 **Baseline de testes atual:** suíte completa **1516 passed** (após o micro-fix do Swagger; 85 arquivos de teste). Nas partes anteriores: 1512 (Parte 29) → 1516 (Swagger, +4).
 
@@ -245,3 +247,48 @@ Objetivo: confrontar as premissas do código com a Evolution **real** (primeira 
 - **Testar cadastro/login/QR:** Swagger em `/api/schema/swagger-ui/` (agora funcional após o sidecar). Corpo do token: `{"email": ..., "password": ...}`. Se o access expirar no meio do smoke, use `/api/auth/token/refresh/` em vez de relogar (evita `429`).
 - **Commit hashes de referência:** `074c212` P28 · `3a9991f` micro-fix e-mail · `2556e35` P29 · `a044ac2` micro-fix P29 · `0ad3ed5` `.env.example` · `a11e8c2` Swagger · `d1f92eb` fix Evolution `@lid`+`keyId` · `66de7d2` requirements UTF-8/CI (CI verde confirmado 29/07) · `55b4143` hotfix identidade `@lid` (HEAD atual da master).
 - **Infra (não-commit):** Evolution atualizada **2.2.3 → 2.3.7** em 29/07 (`evoapicloud/evolution-api:v2.3.7`) — fechou o bloqueador LID. Ver §9.
+
+---
+
+## Adendo à §9 — validação end-to-end ao vivo (30/07/2026, 02:09 UTC)
+
+Tripé completo do WhatsApp validado **ao vivo na 2.3.7, pelo caminho real do produto** (não curl direto na Evolution):
+
+- **Outbound pelo endpoint do produto:** `POST /api/omnichannel/conversations/{id}/reply/` (JWT via Swagger) → `201` com `direction:outbound, status:pending` → Celery → `outbound_routing` → EvolutionClient → **mensagem entregue no WhatsApp real** (confirmado no aparelho).
+- **Delivery-status:** a mesma mensagem evoluiu `pending → delivered` em ~2s, com `external_id` preenchido (`3EB0C20CB75FF46CCBAE7F`), via `messages.update` casado por `keyId` — o mecanismo estudado/testado nesta sessão, funcionando em produção real.
+- **Inbound:** mensagens reais entram como `direction:inbound, delivered`, cada uma com `external_id` real (inclui `AC9F040D67873783156B9E13BF484CC7`, o payload que virou fixture no fix da 2.3.7). Contact/Conversation/Message no workspace correto.
+
+**Conclusão:** inbound + outbound + delivery-status confirmados com tráfego real. Bloqueador nº1 encerrado de forma definitiva e comprovada. O endpoint `/reply/` valida destinatário (`recipient_unresolved`/`recipient_is_channel_phone` → 409) antes de agendar — não disparou, coerente com contatos resolvidos na 2.3.7.
+
+---
+
+## 11. Incidente de git — vazamento de backups e limpeza (30/07/2026)
+
+**O que houve:** o commit do fix de fixtures (Claude Code, apesar da instrução "não commitar") arrastou junto artefatos locais do upgrade da Evolution: `docker-compose.yml.bak` e **`evolution_pg_backup.tar.gz` (16,2 MB — dump real do banco da instância WhatsApp: contatos, chats, mensagens)**, além de dois backups pequenos. O `.gitignore` não os cobria.
+
+**Correção aplicada e verificada:**
+1. `.gitignore` atualizado (`*.tar.gz`, `*.bak`, `docker-compose.yml.bak`, `evolution_*_backup.*`).
+2. `git rm --cached` dos artefatos + reconstrução de commits limpos (via `git reset` ~3 commits).
+3. **Histórico reescrito com `git filter-repo`** removendo os 4 blobs de todos os commits; `push --force`. Verificado por clone novo: nenhum `.tar.gz`/`.bak` no histórico, dump não-recuperável (`could not get object info`), `git fsck` limpo.
+4. Faxina local (`reflog expire` + `gc --prune=now`).
+
+**Efeito colateral cosmético (aceito, não corrigir):** o `reset`+force-push deixou um merge (`2f40650`) e dois commits "gêmeos" do fix no histórico — árvore final correta, só um "Y" estético no `git log`. Auditoria confirmou: nada de produção deletado, hotfix `@lid` íntegro, conteúdo final completo.
+
+**🔴 PENDÊNCIAS DE PRIVACIDADE (repo é PÚBLICO — tratar como exposição ocorrida):**
+- **Rotacionar credenciais** que vazaram/estavam no dump: `EVOLUTION_AUTHENTICATION_API_KEY` (container) + `EVOLUTION_API_KEY` (Django), e `webhook_secret` do canal. (Também vazaram em claro nas capturas de ngrok.)
+- **Abrir ticket no GitHub Support** pedindo limpeza de commits órfãos em cache (hashes antigos `cbe5041`…`60510c5`).
+- **Considerar tornar o repo privado** enquanto em dev com dados reais de WhatsApp de terceiros (LGPD — dados pessoais).
+- Apagar a pasta local `API-Silvertech-Ommni-channel-main.backup-antes-filter` (contém o dump) quando não precisar mais da rede de segurança.
+- *(Pausado a pedido do dev; retomar quando fizer sentido.)*
+
+**Aprendizado:** o `.gitignore` só protege daqui pra frente; remover do HEAD ≠ remover do histórico. Conferir `git status`/`git diff` antes de qualquer push — o Claude Code já ignorou "não commitar" uma vez.
+
+## 12. Parte 30 — estado apurado e prompt pronto (30/07/2026)
+
+**Apuração no código (o que a P30 realmente é):** `restart`, `disconnect` e `remove` **já existem** (entregues dentro da Parte 29: views, capabilities `RESTART`/`DISCONNECT`/`REMOVE`, guardas de transição, erros sanitizados). Portanto a Parte 30 real =:
+- **Decisão A (núcleo, falta 100%):** **reconnect / refresh-QR** — não existe endpoint que leve um canal `DISCONNECTED`/`ERROR` de volta a `WAITING_QR` para reparear sem recriar instância. Hoje só o provisionamento inicial e o webhook setam `WAITING_QR`; o `get_qr` só lê e exige canal já em `WAITING_QR`. É a lacuna que obrigou a reparear pelo Manager da Evolution no upgrade.
+- **Decisão B (condicional):** `remove` faz **hard-delete** (`channel.delete()` → `CASCADE` nos `EvolutionWebhookEvent`; conversas sobrevivem por `SET_NULL`). Roadmap pede arquivamento. Prompt instrui: implementar archive **só se** for aditivo/baixo risco; senão documentar e adiar, mantendo hard-delete.
+
+**Entregável pronto:** `prompt_parte_30_reconnect_refresh_qr.md` (formato Claude Code, self-contained). Cria `reconnect_whatsapp_channel`, view `...ReconnectView`, capability `RECONNECT` ({OWNER, ADMIN}), rota, e testes (transições, idempotência, RBAC, isolamento, segredos, falha remota). Guardrail central: **reconnect NÃO recria `instance_name`/`webhook_secret`/instância** — é reconexão, preserva histórico.
+
+**Recomendação registrada:** rodar a P30 só com a Decisão A (enxuta); tratar archive (B) como parte futura dedicada, com análise de impacto no schema.

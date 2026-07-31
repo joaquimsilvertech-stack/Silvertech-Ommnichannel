@@ -26,6 +26,12 @@ _BLOCKED_MANAGEMENT_STATES = frozenset(
     {WhatsAppChannel.Status.PROVISIONING, WhatsAppChannel.Status.DELETING},
 )
 
+# Estados "parados" a partir dos quais reconectar (refresh-QR) faz sentido: o
+# canal nao esta no meio de um ciclo de vida nem ativo/pareando.
+_RECONNECTABLE_STATES = frozenset(
+    {WhatsAppChannel.Status.DISCONNECTED, WhatsAppChannel.Status.ERROR},
+)
+
 
 class WhatsAppChannelManagementError(Exception):
     """Falha segura de gestao, sem credenciais ou detalhe externo."""
@@ -46,6 +52,55 @@ def restart_whatsapp_channel(*, channel: WhatsAppChannel, client=None) -> WhatsA
         raise _safe_error(channel, operation='restart', exc=exc) from exc
 
     channel.status = WhatsAppChannel.Status.RECONNECTING
+    channel.last_connection_update_at = timezone.now()
+    channel.save()
+    return channel
+
+
+def reconnect_whatsapp_channel(*, channel: WhatsAppChannel, client=None) -> WhatsAppChannel:
+    """
+    Reabre a sessao de um canal ja provisionado (refresh-QR), levando-o de volta
+    a `WAITING_QR` para reparear **sem** recriar a instancia nem perder historico.
+
+    Reutiliza a instancia existente (`channel.instance_name`) e aciona a mesma via
+    da Evolution que o painel usa para "gerar QR": o endpoint de conexao
+    (`get_qr_code` -> `GET /instance/connect/{instance}`), que reabre a sessao e
+    emite o QR sem tocar em `instance_name`/`webhook_public_id`/`webhook_secret`
+    nem no historico do canal. O QR em si nunca entra na resposta: apos
+    `WAITING_QR`, o frontend busca o codigo pelo endpoint de QR existente.
+
+    Matriz de transicoes:
+      - `DISCONNECTED`, `ERROR` -> reabre a sessao e move para `WAITING_QR` (200).
+      - `WAITING_QR` -> idempotente: ja ha QR pendente; retorna sem chamar a
+        Evolution nem duplicar instancia/QR (espelha o `disconnect` ja
+        `DISCONNECTED`).
+      - `PROVISIONING`, `DELETING` -> 409 (ciclo de vida, via
+        `_guard_not_in_lifecycle`).
+      - `CONNECTED`, `CONNECTING`, `RECONNECTING` -> 409: canal ativo/pareando;
+        para reparear, desconecte antes. Nao ha reconexao a partir desses.
+
+    Falha remota -> `WhatsAppChannelManagementError` sanitizado (502), sem vazar
+    detalhe da Evolution, como restart/disconnect ja fazem.
+    """
+    if channel.status == WhatsAppChannel.Status.WAITING_QR:
+        return channel
+
+    _guard_not_in_lifecycle(channel, operation='reconnect')
+
+    if channel.status not in _RECONNECTABLE_STATES:
+        raise WhatsAppChannelManagementError(
+            error_code='CHANNEL_STATE_CONFLICT',
+            http_status=409,
+        )
+
+    resolved_client = client or get_evolution_client()
+    try:
+        resolved_client.get_qr_code(instance_name=channel.instance_name)
+    except EvolutionAPIError as exc:
+        raise _safe_error(channel, operation='reconnect', exc=exc) from exc
+
+    channel.status = WhatsAppChannel.Status.WAITING_QR
+    channel.last_error_code = ''
     channel.last_connection_update_at = timezone.now()
     channel.save()
     return channel

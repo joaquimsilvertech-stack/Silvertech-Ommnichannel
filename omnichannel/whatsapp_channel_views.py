@@ -24,6 +24,7 @@ from omnichannel.whatsapp_channel_management import (
     SAFE_MANAGEMENT_ERROR_MESSAGE,
     WhatsAppChannelManagementError,
     disconnect_whatsapp_channel,
+    reconnect_whatsapp_channel,
     remove_whatsapp_channel,
     restart_whatsapp_channel,
 )
@@ -332,6 +333,38 @@ class WorkspaceWhatsAppChannelRestartView(
         channel = self._get_channel(workspace=workspace, channel_id=channel_id)
         try:
             channel = restart_whatsapp_channel(channel=channel)
+        except WhatsAppChannelManagementError as exc:
+            return _with_private_no_store(_safe_management_error_response(exc))
+        return _with_private_no_store(_channel_status_response(channel))
+
+
+class WorkspaceWhatsAppChannelReconnectView(
+    _WorkspaceWhatsAppChannelAccessMixin,
+    APIView,
+):
+    required_channel_capability = ChannelCapability.RECONNECT
+    throttle_classes = [WhatsAppChannelManagementThrottle]
+    http_method_names = ['post', 'options']
+
+    @extend_schema(
+        summary='Reconectar canal WhatsApp (refresh-QR)',
+        request=None,
+        responses={
+            200: WhatsAppChannelStatusSerializer,
+            403: OpenApiResponse(description='Sem capability RECONNECT.'),
+            404: OpenApiResponse(description='Canal inexistente ou de outro tenant.'),
+            409: OpenApiResponse(
+                description='Estado incompativel (provisioning/deleting/connected/'
+                'connecting/reconnecting).',
+            ),
+            502: OpenApiResponse(description='Falha segura na Evolution (error_code sanitizado).'),
+        },
+    )
+    def post(self, request: Request, workspace_id: str, channel_id: UUID) -> Response:
+        workspace = self._get_workspace(workspace_id, ChannelCapability.RECONNECT)
+        channel = self._get_channel(workspace=workspace, channel_id=channel_id)
+        try:
+            channel = reconnect_whatsapp_channel(channel=channel)
         except WhatsAppChannelManagementError as exc:
             return _with_private_no_store(_safe_management_error_response(exc))
         return _with_private_no_store(_channel_status_response(channel))

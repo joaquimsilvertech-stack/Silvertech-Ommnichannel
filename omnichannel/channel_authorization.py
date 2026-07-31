@@ -9,7 +9,9 @@ capability -> roles, para eliminar a duplicacao que antes existia entre
 Politica de produto
 -------------------
 - Acoes de leitura e conexao (`VIEW`, `CONNECT`) e as acoes operacionais
-  (`RESTART`, `DISCONNECT`) seguem a regra historica: `{OWNER, ADMIN}`.
+  (`RESTART`, `RECONNECT`, `DISCONNECT`) seguem a regra historica: `{OWNER, ADMIN}`.
+  `RECONNECT` (refresh-QR) e operacional e nao-destrutivo — reabre a sessao da
+  instancia existente sem recriar recursos nem perder historico.
 - `REMOVE` e destrutiva e irreversivel (apaga a instancia na Evolution e orfaniza
   as conversas para legado via `SET_NULL`); por isso e **OWNER-only** por padrao.
   Este e o unico lugar a ajustar caso o produto decida liberar `REMOVE` para
@@ -38,6 +40,7 @@ class ChannelCapability(str, Enum):
     VIEW = 'view'
     CONNECT = 'connect'
     RESTART = 'restart'
+    RECONNECT = 'reconnect'
     DISCONNECT = 'disconnect'
     REMOVE = 'remove'
 
@@ -50,6 +53,7 @@ CHANNEL_CAPABILITY_ROLES: dict[ChannelCapability, frozenset[str]] = {
     ChannelCapability.VIEW: _ADMIN_ROLES,
     ChannelCapability.CONNECT: _ADMIN_ROLES,
     ChannelCapability.RESTART: _ADMIN_ROLES,
+    ChannelCapability.RECONNECT: _ADMIN_ROLES,
     ChannelCapability.DISCONNECT: _ADMIN_ROLES,
     ChannelCapability.REMOVE: _OWNER_ONLY,
 }
