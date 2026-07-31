@@ -5,6 +5,8 @@ from omnichannel.views import (
     AIObservabilityEventsView,
     AIObservabilitySummaryView,
     AIObservabilityTimeseriesView,
+    ChannelObservabilitySummaryView,
+    ChannelObservabilityTimeseriesView,
 )
 from omnichannel.whatsapp_channel_views import (
     WorkspaceWhatsAppChannelCollectionView,
@@ -78,6 +80,16 @@ urlpatterns = [
         '<uuid:workspace_id>/ai-observability/events/',
         AIObservabilityEventsView.as_view(),
         name='workspace-ai-observability-events',
+    ),
+    path(
+        '<uuid:workspace_id>/channel-observability/summary/',
+        ChannelObservabilitySummaryView.as_view(),
+        name='workspace-channel-observability-summary',
+    ),
+    path(
+        '<uuid:workspace_id>/channel-observability/timeseries/',
+        ChannelObservabilityTimeseriesView.as_view(),
+        name='workspace-channel-observability-timeseries',
     ),
     path(
         '<uuid:workspace_id>/ai-providers/',

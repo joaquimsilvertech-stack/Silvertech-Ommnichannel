@@ -24,6 +24,8 @@ from .observability import (
     get_ai_observability_recent_events,
     get_ai_observability_summary,
     get_ai_observability_timeseries,
+    get_channel_observability_summary,
+    get_channel_observability_timeseries,
 )
 from .observability_serializers import AIObservabilityEventSerializer
 from .serializers import (
@@ -152,6 +154,24 @@ class AIObservabilityEventsView(WorkspaceAIObservabilityBaseView):
         )
         serializer = AIObservabilityEventSerializer(queryset, many=True)
         return Response({'results': serializer.data})
+
+
+class ChannelObservabilitySummaryView(WorkspaceAIObservabilityBaseView):
+    """Metricas de ciclo de vida/trafego dos canais WhatsApp por workspace."""
+
+    def get(self, request: Request, workspace_id: str) -> Response:
+        workspace = self.get_workspace(request)
+        filters = self.get_filters(request)
+        return Response(get_channel_observability_summary(workspace=workspace, **filters))
+
+
+class ChannelObservabilityTimeseriesView(WorkspaceAIObservabilityBaseView):
+    """Serie temporal de eventos de canal WhatsApp por workspace."""
+
+    def get(self, request: Request, workspace_id: str) -> Response:
+        workspace = self.get_workspace(request)
+        filters = self.get_filters(request)
+        return Response(get_channel_observability_timeseries(workspace=workspace, **filters))
 
 
 class ConversationViewSet(WorkspaceScopedQuerysetMixin, viewsets.ModelViewSet):

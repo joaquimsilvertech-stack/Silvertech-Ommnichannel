@@ -22,13 +22,25 @@ from omnichannel.evolution_qr_cache import (
 )
 from omnichannel.inbound_routing import resolve_inbound_whatsapp_route
 from omnichannel.models import (
+    AIObservabilityEvent,
     Conversation,
     EvolutionWebhookEvent,
     Message,
     WhatsAppChannel,
 )
+from omnichannel.observability import (
+    CONNECTION_ERROR_REASON,
+    record_channel_observability_event_safe,
+)
 
 logger = logging.getLogger(__name__)
+
+# Mapa de status de conexao -> evento de observabilidade de ciclo de vida.
+_CONNECTION_OBSERVABILITY_EVENTS = {
+    WhatsAppChannel.Status.CONNECTED: AIObservabilityEvent.EventType.CHANNEL_CONNECTED,
+    WhatsAppChannel.Status.DISCONNECTED: AIObservabilityEvent.EventType.CHANNEL_DISCONNECTED,
+    WhatsAppChannel.Status.ERROR: AIObservabilityEvent.EventType.CHANNEL_ERROR,
+}
 
 QRCODE_UPDATED = 'QRCODE_UPDATED'
 CONNECTION_UPDATE = 'CONNECTION_UPDATE'
@@ -477,6 +489,22 @@ def process_connection_update(
         if remove_qr:
             _delete_qr_best_effort(channel_id=channel.id, event=event)
 
+        observability_event = _CONNECTION_OBSERVABILITY_EVENTS.get(target_status)
+        if observability_event is not None:
+            is_error = target_status == WhatsAppChannel.Status.ERROR
+            record_channel_observability_event_safe(
+                workspace=channel.workspace,
+                channel=channel,
+                event_type=observability_event,
+                status=(
+                    AIObservabilityEvent.Status.FAILED
+                    if is_error
+                    else AIObservabilityEvent.Status.SUCCESS
+                ),
+                reason_code=CONNECTION_ERROR_REASON if is_error else '',
+                metadata={'action': 'connection_update'},
+            )
+
     _run_claimed_event(claim, _handle)
 
 
@@ -639,6 +667,19 @@ def _create_inbound_message(
             status=EvolutionWebhookEvent.Status.PROCESSED,
             error_code='',
         )
+
+    # Volume inbound por canal — SEM body nem telefone (apenas contadores/tipo).
+    record_channel_observability_event_safe(
+        workspace=channel.workspace,
+        channel=channel,
+        event_type=AIObservabilityEvent.EventType.CHANNEL_INBOUND_RECEIVED,
+        status=AIObservabilityEvent.Status.SUCCESS,
+        metadata={
+            'action': 'inbound',
+            'direction': 'inbound',
+            'message_type': parsed.message_type,
+        },
+    )
 
     logger.info(
         'Mensagem inbound Evolution processada',

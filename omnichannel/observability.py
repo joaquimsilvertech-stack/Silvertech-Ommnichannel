@@ -21,6 +21,12 @@ PERIOD_DELTAS = {
 }
 MAX_RECENT_EVENTS_LIMIT = 100
 DEFAULT_RECENT_EVENTS_LIMIT = 25
+# reason_code canonico para distinguir a origem de um CHANNEL_ERROR nas metricas
+# (provisionamento vs. atualizacao de conexao via webhook). Sanitizado pelo
+# proprio record; mantido em caixa alta para casar com sanitize_observability_code.
+_PROVISIONING_ERROR_REASON = 'PROVISIONING'
+CONNECTION_ERROR_REASON = 'CONNECTION'
+PROVISIONING_ERROR_REASON = _PROVISIONING_ERROR_REASON
 ALLOWED_METADATA_KEYS = {
     'retry_countdown',
     'is_retryable',
@@ -95,6 +101,7 @@ def record_ai_observability_event(
     source_message=None,
     output_message=None,
     ai_processing_run=None,
+    whatsapp_channel=None,
     provider: str = '',
     model_name: str = '',
     reason_code: str = '',
@@ -113,6 +120,7 @@ def record_ai_observability_event(
         source_message=source_message,
         output_message=output_message,
         ai_processing_run=ai_processing_run,
+        whatsapp_channel=whatsapp_channel,
         event_type=sanitize_observability_code(event_type),
         status=str(status or '')[:32],
         provider=(provider or getattr(provider_config, 'provider', '') or '')[:32],
@@ -140,6 +148,37 @@ def record_ai_observability_event_safe(**kwargs) -> AIObservabilityEvent | None:
             },
         )
         return None
+
+
+def record_channel_observability_event_safe(
+    *,
+    workspace,
+    channel,
+    event_type: str,
+    status: str,
+    reason_code: str = '',
+    error_code: str = '',
+    latency_ms: int | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> AIObservabilityEvent | None:
+    """
+    Helper fino de observabilidade de ciclo de vida de canal WhatsApp.
+
+    Delega ao `record_ai_observability_event_safe` ja existente (mesma
+    sanitizacao de code/metadata e mesma garantia de "nunca quebra o fluxo
+    principal"), apenas fixando `whatsapp_channel=channel`. Nao reimplementa
+    sanitizacao nem try/except.
+    """
+    return record_ai_observability_event_safe(
+        workspace=workspace,
+        whatsapp_channel=channel,
+        event_type=event_type,
+        status=status,
+        reason_code=reason_code,
+        error_code=error_code,
+        latency_ms=latency_ms,
+        metadata=metadata,
+    )
 
 
 def get_period_start(period: str):
@@ -274,6 +313,129 @@ def get_ai_observability_recent_events(
     safe_limit = min(max(int(limit or DEFAULT_RECENT_EVENTS_LIMIT), 1), MAX_RECENT_EVENTS_LIMIT)
     queryset = get_ai_observability_queryset(workspace=workspace, period=period, **filters)
     return queryset.order_by('-created_at')[:safe_limit]
+
+
+def get_channel_observability_summary(
+    *,
+    workspace,
+    period: str = '24h',
+    **filters,
+) -> dict[str, Any]:
+    """Metricas de ciclo de vida e trafego dos canais, escopadas por workspace."""
+    queryset = get_ai_observability_queryset(workspace=workspace, period=period, **filters)
+    event_type = AIObservabilityEvent.EventType
+
+    totals = queryset.aggregate(
+        channels_created=Count('id', filter=Q(event_type=event_type.CHANNEL_CREATED)),
+        channels_provisioned=Count('id', filter=Q(event_type=event_type.CHANNEL_PROVISIONED)),
+        webhooks_configured=Count('id', filter=Q(event_type=event_type.CHANNEL_WEBHOOK_CONFIGURED)),
+        qr_generated=Count('id', filter=Q(event_type=event_type.CHANNEL_QR_GENERATED)),
+        channels_connected=Count('id', filter=Q(event_type=event_type.CHANNEL_CONNECTED)),
+        channels_disconnected=Count('id', filter=Q(event_type=event_type.CHANNEL_DISCONNECTED)),
+        channels_reconnecting=Count('id', filter=Q(event_type=event_type.CHANNEL_RECONNECTING)),
+        channels_error=Count('id', filter=Q(event_type=event_type.CHANNEL_ERROR)),
+        provisioning_failed=Count(
+            'id',
+            filter=Q(event_type=event_type.CHANNEL_ERROR, reason_code=_PROVISIONING_ERROR_REASON),
+        ),
+        channels_removed=Count('id', filter=Q(event_type=event_type.CHANNEL_REMOVED)),
+        inbound_received=Count('id', filter=Q(event_type=event_type.CHANNEL_INBOUND_RECEIVED)),
+        outbound_attempt=Count('id', filter=Q(event_type=event_type.OUTBOUND_DELIVERY_ATTEMPT)),
+        outbound_success=Count('id', filter=Q(event_type=event_type.OUTBOUND_DELIVERY_SUCCESS)),
+        outbound_failed=Count('id', filter=Q(event_type=event_type.OUTBOUND_DELIVERY_FAILED)),
+    )
+    latency = queryset.aggregate(
+        avg_time_to_qr_ms=Avg('latency_ms', filter=Q(event_type=event_type.CHANNEL_QR_GENERATED)),
+        avg_delivery_latency_ms=Avg(
+            'latency_ms',
+            filter=Q(event_type=event_type.OUTBOUND_DELIVERY_SUCCESS),
+        ),
+    )
+    outbound_total = (totals['outbound_success'] or 0) + (totals['outbound_failed'] or 0)
+
+    by_channel = list(
+        queryset.filter(whatsapp_channel__isnull=False)
+        .values('whatsapp_channel')
+        .annotate(
+            connected=Count('id', filter=Q(event_type=event_type.CHANNEL_CONNECTED)),
+            disconnected=Count('id', filter=Q(event_type=event_type.CHANNEL_DISCONNECTED)),
+            errors=Count('id', filter=Q(event_type=event_type.CHANNEL_ERROR)),
+            inbound_received=Count('id', filter=Q(event_type=event_type.CHANNEL_INBOUND_RECEIVED)),
+            outbound_success=Count('id', filter=Q(event_type=event_type.OUTBOUND_DELIVERY_SUCCESS)),
+            outbound_failed=Count('id', filter=Q(event_type=event_type.OUTBOUND_DELIVERY_FAILED)),
+        )
+        .order_by('whatsapp_channel'),
+    )
+    for row in by_channel:
+        row['whatsapp_channel_id'] = str(row.pop('whatsapp_channel'))
+
+    errors = list(
+        queryset.filter(event_type=event_type.CHANNEL_ERROR)
+        .exclude(error_code='')
+        .values('error_code')
+        .annotate(count=Count('id'))
+        .order_by('-count', 'error_code')[:20],
+    )
+
+    return {
+        'workspace_id': str(workspace.id),
+        'period': period,
+        'totals': totals,
+        'rates': {
+            'outbound_success_rate': _rate(totals['outbound_success'], outbound_total),
+        },
+        'latency': {
+            'avg_time_to_qr_ms': _avg_to_int(latency['avg_time_to_qr_ms']),
+            'avg_delivery_latency_ms': _avg_to_int(latency['avg_delivery_latency_ms']),
+        },
+        'by_channel': by_channel,
+        'errors': errors,
+    }
+
+
+def get_channel_observability_timeseries(
+    *,
+    workspace,
+    period: str = '24h',
+    **filters,
+) -> dict[str, Any]:
+    """Serie temporal de eventos de canal, escopada por workspace."""
+    queryset = get_ai_observability_queryset(workspace=workspace, period=period, **filters)
+    bucket_func = TruncHour if period == '24h' else TruncDay
+    bucket = 'hour' if period == '24h' else 'day'
+    event_type = AIObservabilityEvent.EventType
+
+    points = list(
+        queryset.annotate(bucket_ts=bucket_func('created_at'))
+        .values('bucket_ts')
+        .annotate(
+            connected=Count('id', filter=Q(event_type=event_type.CHANNEL_CONNECTED)),
+            disconnected=Count('id', filter=Q(event_type=event_type.CHANNEL_DISCONNECTED)),
+            errors=Count('id', filter=Q(event_type=event_type.CHANNEL_ERROR)),
+            inbound_received=Count('id', filter=Q(event_type=event_type.CHANNEL_INBOUND_RECEIVED)),
+            outbound_success=Count('id', filter=Q(event_type=event_type.OUTBOUND_DELIVERY_SUCCESS)),
+            outbound_failed=Count('id', filter=Q(event_type=event_type.OUTBOUND_DELIVERY_FAILED)),
+        )
+        .order_by('bucket_ts'),
+    )
+
+    return {
+        'workspace_id': str(workspace.id),
+        'period': period,
+        'bucket': bucket,
+        'points': [
+            {
+                'timestamp': item['bucket_ts'].isoformat() if item['bucket_ts'] else '',
+                'connected': item['connected'],
+                'disconnected': item['disconnected'],
+                'errors': item['errors'],
+                'inbound_received': item['inbound_received'],
+                'outbound_success': item['outbound_success'],
+                'outbound_failed': item['outbound_failed'],
+            }
+            for item in points
+        ],
+    }
 
 
 def _rate(numerator: int | None, denominator: int | None) -> float:

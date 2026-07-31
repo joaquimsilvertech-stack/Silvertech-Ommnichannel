@@ -13,7 +13,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from omnichannel.evolution import EvolutionAPIError, get_evolution_client
-from omnichannel.models import WhatsAppChannel
+from omnichannel.models import AIObservabilityEvent, WhatsAppChannel
+from omnichannel.observability import record_channel_observability_event_safe
 from omnichannel.whatsapp_channel_provisioning import _sanitize_error_code
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,13 @@ def restart_whatsapp_channel(*, channel: WhatsAppChannel, client=None) -> WhatsA
     channel.status = WhatsAppChannel.Status.RECONNECTING
     channel.last_connection_update_at = timezone.now()
     channel.save()
+    record_channel_observability_event_safe(
+        workspace=channel.workspace,
+        channel=channel,
+        event_type=AIObservabilityEvent.EventType.CHANNEL_RECONNECTING,
+        status=AIObservabilityEvent.Status.SUCCESS,
+        metadata={'action': 'restart'},
+    )
     return channel
 
 
@@ -103,6 +111,13 @@ def reconnect_whatsapp_channel(*, channel: WhatsAppChannel, client=None) -> What
     channel.last_error_code = ''
     channel.last_connection_update_at = timezone.now()
     channel.save()
+    record_channel_observability_event_safe(
+        workspace=channel.workspace,
+        channel=channel,
+        event_type=AIObservabilityEvent.EventType.CHANNEL_QR_GENERATED,
+        status=AIObservabilityEvent.Status.SUCCESS,
+        metadata={'action': 'reconnect'},
+    )
     return channel
 
 
@@ -126,6 +141,13 @@ def disconnect_whatsapp_channel(*, channel: WhatsAppChannel, client=None) -> Wha
     channel.connected_at = None
     channel.last_connection_update_at = timezone.now()
     channel.save()
+    record_channel_observability_event_safe(
+        workspace=channel.workspace,
+        channel=channel,
+        event_type=AIObservabilityEvent.EventType.CHANNEL_DISCONNECTED,
+        status=AIObservabilityEvent.Status.SUCCESS,
+        metadata={'action': 'disconnect'},
+    )
     return channel
 
 
@@ -155,6 +177,16 @@ def remove_whatsapp_channel(*, channel: WhatsAppChannel, client=None) -> None:
                 'exception_type': type(exc).__name__,
             },
         )
+
+    # Registra a remocao ANTES do delete: com FK `SET_NULL`, o evento sobrevive
+    # ao canal (vira `whatsapp_channel=None`), preservando a trilha de auditoria.
+    record_channel_observability_event_safe(
+        workspace=channel.workspace,
+        channel=channel,
+        event_type=AIObservabilityEvent.EventType.CHANNEL_REMOVED,
+        status=AIObservabilityEvent.Status.SUCCESS,
+        metadata={'action': 'remove'},
+    )
 
     with transaction.atomic():
         channel.delete()

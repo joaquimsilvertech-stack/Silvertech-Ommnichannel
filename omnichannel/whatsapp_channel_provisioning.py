@@ -5,6 +5,7 @@ import re
 import unicodedata
 import uuid
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any
 from uuid import UUID
 
@@ -33,7 +34,12 @@ from omnichannel.evolution_webhook import (
     build_evolution_channel_webhook_url,
     generate_webhook_secret,
 )
-from omnichannel.models import WhatsAppChannel
+from omnichannel.models import AIObservabilityEvent, WhatsAppChannel
+from omnichannel.observability import (
+    PROVISIONING_ERROR_REASON,
+    calculate_latency_ms,
+    record_channel_observability_event_safe,
+)
 from workspaces.models import Workspace
 
 logger = logging.getLogger(__name__)
@@ -83,6 +89,7 @@ def provision_whatsapp_channel(
     client: BaseEvolutionClient | None = None,
 ) -> WhatsAppChannelProvisioningResult:
     """Provisiona uma instancia remota sem manter lock durante o HTTP."""
+    provisioning_started_at = perf_counter()
     normalized_name = _normalize_channel_name(channel_name)
     reservation = _reserve_local_channel(
         workspace=workspace,
@@ -107,6 +114,14 @@ def provision_whatsapp_channel(
             remote_instance_created=False,
             idempotent_reuse=True,
         )
+
+    record_channel_observability_event_safe(
+        workspace=channel.workspace,
+        channel=channel,
+        event_type=AIObservabilityEvent.EventType.CHANNEL_CREATED,
+        status=AIObservabilityEvent.Status.SUCCESS,
+        metadata={'action': 'provision'},
+    )
 
     try:
         webhook_url = build_evolution_channel_webhook_url(
@@ -172,6 +187,14 @@ def provision_whatsapp_channel(
             http_status=502,
         ) from None
 
+    record_channel_observability_event_safe(
+        workspace=channel.workspace,
+        channel=channel,
+        event_type=AIObservabilityEvent.EventType.CHANNEL_PROVISIONED,
+        status=AIObservabilityEvent.Status.SUCCESS,
+        metadata={'action': 'provision'},
+    )
+
     try:
         resolved_client.configure_webhook(
             instance_name=channel.instance_name,
@@ -203,6 +226,14 @@ def provision_whatsapp_channel(
             operation='configure_webhook',
             exception_type=type(exc).__name__,
         )
+
+    record_channel_observability_event_safe(
+        workspace=channel.workspace,
+        channel=channel,
+        event_type=AIObservabilityEvent.EventType.CHANNEL_WEBHOOK_CONFIGURED,
+        status=AIObservabilityEvent.Status.SUCCESS,
+        metadata={'action': 'provision'},
+    )
 
     try:
         instance_id, instance_token = _extract_safe_instance_credentials(response)
@@ -244,6 +275,15 @@ def provision_whatsapp_channel(
                 else 502 if isinstance(exc, EvolutionAPIError) else 500
             ),
         ) from None
+
+    record_channel_observability_event_safe(
+        workspace=finalized_channel.workspace,
+        channel=finalized_channel,
+        event_type=AIObservabilityEvent.EventType.CHANNEL_QR_GENERATED,
+        status=AIObservabilityEvent.Status.SUCCESS,
+        latency_ms=calculate_latency_ms(provisioning_started_at),
+        metadata={'action': 'provision'},
+    )
 
     logger.info(
         'Canal WhatsApp provisionado na Evolution',
@@ -511,6 +551,15 @@ def _mark_channel_error_safely(*, channel: WhatsAppChannel, error_code: str) -> 
             locked_channel.save(
                 update_fields=['status', 'last_error_code', 'updated_at'],
             )
+        record_channel_observability_event_safe(
+            workspace=locked_channel.workspace,
+            channel=locked_channel,
+            event_type=AIObservabilityEvent.EventType.CHANNEL_ERROR,
+            status=AIObservabilityEvent.Status.FAILED,
+            reason_code=PROVISIONING_ERROR_REASON,
+            error_code=safe_error_code,
+            metadata={'action': 'provision'},
+        )
     except Exception as exc:
         logger.warning(
             'Falha ao marcar canal WhatsApp como erro',

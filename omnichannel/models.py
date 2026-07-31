@@ -368,6 +368,16 @@ class AIObservabilityEvent(BaseModel):
         CREDENTIAL_REPLACED = 'CREDENTIAL_REPLACED', 'Credential replaced'
         CREDENTIAL_REPLACE_FAILED = 'CREDENTIAL_REPLACE_FAILED', 'Credential replace failed'
         CREDENTIAL_REVOKED = 'CREDENTIAL_REVOKED', 'Credential revoked'
+        CHANNEL_CREATED = 'CHANNEL_CREATED', 'Channel created'
+        CHANNEL_PROVISIONED = 'CHANNEL_PROVISIONED', 'Channel provisioned'
+        CHANNEL_WEBHOOK_CONFIGURED = 'CHANNEL_WEBHOOK_CONFIGURED', 'Channel webhook configured'
+        CHANNEL_QR_GENERATED = 'CHANNEL_QR_GENERATED', 'Channel QR generated'
+        CHANNEL_CONNECTED = 'CHANNEL_CONNECTED', 'Channel connected'
+        CHANNEL_DISCONNECTED = 'CHANNEL_DISCONNECTED', 'Channel disconnected'
+        CHANNEL_RECONNECTING = 'CHANNEL_RECONNECTING', 'Channel reconnecting'
+        CHANNEL_ERROR = 'CHANNEL_ERROR', 'Channel error'
+        CHANNEL_REMOVED = 'CHANNEL_REMOVED', 'Channel removed'
+        CHANNEL_INBOUND_RECEIVED = 'CHANNEL_INBOUND_RECEIVED', 'Channel inbound received'
 
     class Status(models.TextChoices):
         SUCCESS = 'success', 'Success'
@@ -416,6 +426,14 @@ class AIObservabilityEvent(BaseModel):
         null=True,
         blank=True,
         related_name='observability_events',
+    )
+    whatsapp_channel = models.ForeignKey(
+        'omnichannel.WhatsAppChannel',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='observability_events',
+        db_index=True,
     )
     event_type = models.CharField(max_length=64, choices=EventType.choices, db_index=True)
     status = models.CharField(max_length=32, choices=Status.choices, db_index=True)
