@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 _CONNECTION_OBSERVABILITY_EVENTS = {
     WhatsAppChannel.Status.CONNECTED: AIObservabilityEvent.EventType.CHANNEL_CONNECTED,
     WhatsAppChannel.Status.DISCONNECTED: AIObservabilityEvent.EventType.CHANNEL_DISCONNECTED,
+    WhatsAppChannel.Status.RECONNECTING: AIObservabilityEvent.EventType.CHANNEL_RECONNECTING,
     WhatsAppChannel.Status.ERROR: AIObservabilityEvent.EventType.CHANNEL_ERROR,
 }
 
@@ -408,6 +409,15 @@ def process_qrcode_updated(
             raise
         if remove_cached_qr:
             _delete_qr_best_effort(channel_id=channel.id, event=event)
+            return
+
+        record_channel_observability_event_safe(
+            workspace=channel.workspace,
+            channel=channel,
+            event_type=AIObservabilityEvent.EventType.CHANNEL_QR_GENERATED,
+            status=AIObservabilityEvent.Status.SUCCESS,
+            metadata={'action': 'qrcode_updated'},
+        )
 
     _run_claimed_event(claim, _handle)
 
@@ -440,6 +450,7 @@ def process_connection_update(
             return
 
         remove_qr = False
+        connection_error_code = ''
         with transaction.atomic():
             locked_event = EvolutionWebhookEvent.objects.select_for_update().get(id=event.id)
             locked_channel = WhatsAppChannel.objects.select_for_update().get(id=channel.id)
@@ -475,6 +486,7 @@ def process_connection_update(
                 remove_qr = True
             elif target_status == WhatsAppChannel.Status.ERROR:
                 locked_channel.last_error_code = _extract_connection_error_code(payload)
+                connection_error_code = locked_channel.last_error_code
                 update_fields.append('last_error_code')
             elif target_status == WhatsAppChannel.Status.DISCONNECTED:
                 remove_qr = True
@@ -502,6 +514,7 @@ def process_connection_update(
                     else AIObservabilityEvent.Status.SUCCESS
                 ),
                 reason_code=CONNECTION_ERROR_REASON if is_error else '',
+                error_code=connection_error_code if is_error else '',
                 metadata={'action': 'connection_update'},
             )
 

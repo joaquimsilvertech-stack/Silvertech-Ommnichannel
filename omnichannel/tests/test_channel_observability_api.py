@@ -51,7 +51,11 @@ def _emit(workspace, event_type, **kwargs):
 
 def test_owner_can_access_channel_summary() -> None:
     client, workspace = _owner_client()
-    _emit(workspace, EventType.CHANNEL_CONNECTED)
+    channel = WhatsAppChannelFactory(
+        workspace=workspace,
+        status='connected',
+    )
+    _emit(workspace, EventType.CHANNEL_CONNECTED, channel=channel)
 
     response = client.get(_summary_url(workspace))
 
@@ -86,8 +90,10 @@ def test_agent_and_non_member_cannot_access_channel_summary() -> None:
 def test_summary_is_scoped_to_workspace() -> None:
     client, workspace = _owner_client()
     other_workspace = WorkspaceFactory()
-    _emit(workspace, EventType.CHANNEL_CONNECTED)
-    _emit(other_workspace, EventType.CHANNEL_CONNECTED)
+    local_channel = WhatsAppChannelFactory(workspace=workspace, status='connected')
+    other_channel = WhatsAppChannelFactory(workspace=other_workspace, status='connected')
+    _emit(workspace, EventType.CHANNEL_CONNECTED, channel=local_channel)
+    _emit(other_workspace, EventType.CHANNEL_CONNECTED, channel=other_channel)
     _emit(other_workspace, EventType.CHANNEL_ERROR)
 
     body = client.get(_summary_url(workspace)).json()
@@ -110,7 +116,7 @@ def test_cross_tenant_request_does_not_leak_other_workspace() -> None:
 
 def test_summary_aggregates_channel_metrics() -> None:
     client, workspace = _owner_client()
-    channel = WhatsAppChannelFactory(workspace=workspace)
+    channel = WhatsAppChannelFactory(workspace=workspace, status='connected')
     _emit(workspace, EventType.CHANNEL_CONNECTED, channel=channel)
     _emit(workspace, EventType.CHANNEL_DISCONNECTED, channel=channel)
     _emit(
@@ -131,7 +137,9 @@ def test_summary_aggregates_channel_metrics() -> None:
 
     totals = client.get(_summary_url(workspace)).json()['totals']
     assert totals['channels_connected'] == 1
-    assert totals['channels_disconnected'] == 1
+    assert totals['channels_disconnected'] == 0
+    assert totals['channel_connected_events'] == 1
+    assert totals['channel_disconnected_events'] == 1
     assert totals['channels_error'] == 1
     assert totals['provisioning_failed'] == 1
     assert totals['inbound_received'] == 1

@@ -352,6 +352,8 @@ class AIObservabilityEventAdmin(admin.ModelAdmin):
         'source_message',
         'output_message',
         'ai_processing_run',
+        'whatsapp_channel',
+        'whatsapp_channel_id_snapshot',
         'event_type',
         'status',
         'provider',

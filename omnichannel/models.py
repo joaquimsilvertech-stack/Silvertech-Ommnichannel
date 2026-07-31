@@ -435,6 +435,13 @@ class AIObservabilityEvent(BaseModel):
         related_name='observability_events',
         db_index=True,
     )
+    whatsapp_channel_id_snapshot = models.UUIDField(
+        null=True,
+        blank=True,
+        db_index=True,
+        editable=False,
+        help_text='UUID imutavel do canal, preservado apos sua remocao.',
+    )
     event_type = models.CharField(max_length=64, choices=EventType.choices, db_index=True)
     status = models.CharField(max_length=32, choices=Status.choices, db_index=True)
     provider = models.CharField(max_length=32, blank=True)

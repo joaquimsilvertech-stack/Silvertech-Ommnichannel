@@ -166,6 +166,14 @@ def remove_whatsapp_channel(*, channel: WhatsAppChannel, client=None) -> None:
     try:
         resolved_client.delete_instance(instance_name=channel.instance_name)
     except Exception as exc:
+        record_channel_observability_event_safe(
+            workspace=channel.workspace,
+            channel=channel,
+            event_type=AIObservabilityEvent.EventType.CHANNEL_ERROR,
+            status=AIObservabilityEvent.Status.FAILED,
+            error_code='EVOLUTION_REMOTE_DELETE_FAILED',
+            metadata={'action': 'remove'},
+        )
         logger.warning(
             'Remocao remota da instancia Evolution falhou; prosseguindo com remocao local',
             extra={
@@ -206,6 +214,15 @@ def _safe_error(
     operation: str,
     exc: EvolutionAPIError,
 ) -> WhatsAppChannelManagementError:
+    safe_error_code = _sanitize_error_code(exc.error_code)
+    record_channel_observability_event_safe(
+        workspace=channel.workspace,
+        channel=channel,
+        event_type=AIObservabilityEvent.EventType.CHANNEL_ERROR,
+        status=AIObservabilityEvent.Status.FAILED,
+        error_code=safe_error_code,
+        metadata={'action': operation},
+    )
     logger.warning(
         'Acao de gestao do canal falhou na Evolution',
         extra={
@@ -213,8 +230,8 @@ def _safe_error(
             'channel_id': str(channel.id),
             'operation': operation,
             'status': channel.status,
-            'error_code': _sanitize_error_code(exc.error_code),
+            'error_code': safe_error_code,
             'exception_type': type(exc).__name__,
         },
     )
-    return WhatsAppChannelManagementError(error_code=exc.error_code, http_status=502)
+    return WhatsAppChannelManagementError(error_code=safe_error_code, http_status=502)

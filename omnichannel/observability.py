@@ -6,8 +6,9 @@ from datetime import timedelta
 from time import perf_counter
 from typing import Any
 
+from django.db import transaction
 from django.db.models import Avg, Count, Q, QuerySet
-from django.db.models.functions import TruncDay, TruncHour
+from django.db.models.functions import Coalesce, TruncDay, TruncHour
 from django.utils import timezone
 
 from omnichannel.models import AIObservabilityEvent
@@ -59,6 +60,23 @@ BLOCKED_METADATA_KEY_FRAGMENTS = {
     'response',
 }
 
+# Tipos observados nos fluxos/fixtures da Evolution e nos tipos de conteudo que
+# o pipeline classifica explicitamente. Valores externos fora desta allowlist
+# nunca sao copiados para observabilidade.
+ALLOWED_MESSAGE_TYPES = frozenset(
+    {
+        'conversation',
+        'extendedTextMessage',
+        'audioMessage',
+        'documentMessage',
+        'imageMessage',
+        'reactionMessage',
+        'stickerMessage',
+        'videoMessage',
+    },
+)
+UNKNOWN_MESSAGE_TYPE = 'unknown'
+
 
 def sanitize_observability_code(value: str | None) -> str:
     sanitized = re.sub(r'[^A-Z0-9_]+', '_', str(value or '').upper()).strip('_')
@@ -79,11 +97,19 @@ def sanitize_observability_metadata(metadata: dict[str, Any] | None) -> dict[str
             fragment in lowered_key for fragment in BLOCKED_METADATA_KEY_FRAGMENTS
         ):
             continue
-        if isinstance(value, (bool, int, float)) or value is None:
+        if safe_key == 'message_type':
+            sanitized[safe_key] = normalize_observability_message_type(value)
+        elif isinstance(value, (bool, int, float)) or value is None:
             sanitized[safe_key] = value
         elif isinstance(value, str):
             sanitized[safe_key] = value[:128]
     return sanitized
+
+
+def normalize_observability_message_type(value: Any) -> str:
+    if isinstance(value, str) and value in ALLOWED_MESSAGE_TYPES:
+        return value
+    return UNKNOWN_MESSAGE_TYPE
 
 
 def calculate_latency_ms(start_monotonic: float) -> int:
@@ -113,6 +139,9 @@ def record_ai_observability_event(
     if latency_ms is not None and latency_ms < 0:
         raise ValueError('latency_ms must be positive.')
 
+    if whatsapp_channel is not None and whatsapp_channel.workspace_id != workspace.id:
+        raise ValueError('WhatsApp channel does not belong to workspace.')
+
     return AIObservabilityEvent.objects.create(
         workspace=workspace,
         provider_config=provider_config,
@@ -121,6 +150,9 @@ def record_ai_observability_event(
         output_message=output_message,
         ai_processing_run=ai_processing_run,
         whatsapp_channel=whatsapp_channel,
+        whatsapp_channel_id_snapshot=(
+            whatsapp_channel.id if whatsapp_channel is not None else None
+        ),
         event_type=sanitize_observability_code(event_type),
         status=str(status or '')[:32],
         provider=(provider or getattr(provider_config, 'provider', '') or '')[:32],
@@ -135,7 +167,10 @@ def record_ai_observability_event(
 
 def record_ai_observability_event_safe(**kwargs) -> AIObservabilityEvent | None:
     try:
-        return record_ai_observability_event(**kwargs)
+        # O savepoint impede que uma falha de banco na telemetria contamine uma
+        # transacao externa do fluxo principal.
+        with transaction.atomic():
+            return record_ai_observability_event(**kwargs)
     except Exception as exc:
         workspace = kwargs.get('workspace')
         logger.warning(
@@ -325,13 +360,19 @@ def get_channel_observability_summary(
     queryset = get_ai_observability_queryset(workspace=workspace, period=period, **filters)
     event_type = AIObservabilityEvent.EventType
 
-    totals = queryset.aggregate(
+    event_totals = queryset.aggregate(
         channels_created=Count('id', filter=Q(event_type=event_type.CHANNEL_CREATED)),
         channels_provisioned=Count('id', filter=Q(event_type=event_type.CHANNEL_PROVISIONED)),
         webhooks_configured=Count('id', filter=Q(event_type=event_type.CHANNEL_WEBHOOK_CONFIGURED)),
         qr_generated=Count('id', filter=Q(event_type=event_type.CHANNEL_QR_GENERATED)),
-        channels_connected=Count('id', filter=Q(event_type=event_type.CHANNEL_CONNECTED)),
-        channels_disconnected=Count('id', filter=Q(event_type=event_type.CHANNEL_DISCONNECTED)),
+        channel_connected_events=Count(
+            'id',
+            filter=Q(event_type=event_type.CHANNEL_CONNECTED),
+        ),
+        channel_disconnected_events=Count(
+            'id',
+            filter=Q(event_type=event_type.CHANNEL_DISCONNECTED),
+        ),
         channels_reconnecting=Count('id', filter=Q(event_type=event_type.CHANNEL_RECONNECTING)),
         channels_error=Count('id', filter=Q(event_type=event_type.CHANNEL_ERROR)),
         provisioning_failed=Count(
@@ -344,6 +385,19 @@ def get_channel_observability_summary(
         outbound_success=Count('id', filter=Q(event_type=event_type.OUTBOUND_DELIVERY_SUCCESS)),
         outbound_failed=Count('id', filter=Q(event_type=event_type.OUTBOUND_DELIVERY_FAILED)),
     )
+    from omnichannel.models import WhatsAppChannel
+
+    inventory = WhatsAppChannel.objects.filter(workspace=workspace).aggregate(
+        channels_connected=Count(
+            'id',
+            filter=Q(status=WhatsAppChannel.Status.CONNECTED),
+        ),
+        channels_disconnected=Count(
+            'id',
+            filter=Q(status=WhatsAppChannel.Status.DISCONNECTED),
+        ),
+    )
+    totals = {**event_totals, **inventory}
     latency = queryset.aggregate(
         avg_time_to_qr_ms=Avg('latency_ms', filter=Q(event_type=event_type.CHANNEL_QR_GENERATED)),
         avg_delivery_latency_ms=Avg(
@@ -351,11 +405,21 @@ def get_channel_observability_summary(
             filter=Q(event_type=event_type.OUTBOUND_DELIVERY_SUCCESS),
         ),
     )
+    latency['avg_time_to_connection_ms'] = _avg_time_to_first_connection_ms(
+        workspace=workspace,
+        eligible_queryset=queryset,
+    )
     outbound_total = (totals['outbound_success'] or 0) + (totals['outbound_failed'] or 0)
 
     by_channel = list(
-        queryset.filter(whatsapp_channel__isnull=False)
-        .values('whatsapp_channel')
+        queryset.annotate(
+            channel_identity=Coalesce(
+                'whatsapp_channel_id',
+                'whatsapp_channel_id_snapshot',
+            ),
+        )
+        .filter(channel_identity__isnull=False)
+        .values('channel_identity')
         .annotate(
             connected=Count('id', filter=Q(event_type=event_type.CHANNEL_CONNECTED)),
             disconnected=Count('id', filter=Q(event_type=event_type.CHANNEL_DISCONNECTED)),
@@ -364,10 +428,10 @@ def get_channel_observability_summary(
             outbound_success=Count('id', filter=Q(event_type=event_type.OUTBOUND_DELIVERY_SUCCESS)),
             outbound_failed=Count('id', filter=Q(event_type=event_type.OUTBOUND_DELIVERY_FAILED)),
         )
-        .order_by('whatsapp_channel'),
+        .order_by('channel_identity'),
     )
     for row in by_channel:
-        row['whatsapp_channel_id'] = str(row.pop('whatsapp_channel'))
+        row['whatsapp_channel_id'] = str(row.pop('channel_identity'))
 
     errors = list(
         queryset.filter(event_type=event_type.CHANNEL_ERROR)
@@ -386,6 +450,7 @@ def get_channel_observability_summary(
         },
         'latency': {
             'avg_time_to_qr_ms': _avg_to_int(latency['avg_time_to_qr_ms']),
+            'avg_time_to_connection_ms': latency['avg_time_to_connection_ms'],
             'avg_delivery_latency_ms': _avg_to_int(latency['avg_delivery_latency_ms']),
         },
         'by_channel': by_channel,
@@ -448,3 +513,54 @@ def _avg_to_int(value) -> int | None:
     if value is None:
         return None
     return int(value)
+
+
+def _avg_time_to_first_connection_ms(*, workspace, eligible_queryset) -> int | None:
+    """Media CREATED -> primeira CONNECTED; a janela usa a primeira conexao."""
+    event_type = AIObservabilityEvent.EventType
+    eligible_connection_ids = set(
+        eligible_queryset.filter(event_type=event_type.CHANNEL_CONNECTED).values_list(
+            'id',
+            flat=True,
+        ),
+    )
+    if not eligible_connection_ids:
+        return None
+
+    lifecycle_events = (
+        AIObservabilityEvent.objects.filter(
+            workspace=workspace,
+            event_type__in={event_type.CHANNEL_CREATED, event_type.CHANNEL_CONNECTED},
+        )
+        .annotate(
+            channel_identity=Coalesce(
+                'whatsapp_channel_id',
+                'whatsapp_channel_id_snapshot',
+            ),
+        )
+        .filter(channel_identity__isnull=False)
+        .values('id', 'event_type', 'created_at', 'channel_identity')
+        .order_by('created_at', 'id')
+    )
+
+    first_created: dict[Any, Any] = {}
+    first_connected: dict[Any, dict[str, Any]] = {}
+    for event in lifecycle_events:
+        identity = event['channel_identity']
+        if event['event_type'] == event_type.CHANNEL_CREATED:
+            first_created.setdefault(identity, event['created_at'])
+        else:
+            first_connected.setdefault(identity, event)
+
+    samples: list[int] = []
+    for identity, connection in first_connected.items():
+        created_at = first_created.get(identity)
+        if (
+            connection['id'] in eligible_connection_ids
+            and created_at is not None
+            and created_at <= connection['created_at']
+        ):
+            samples.append(int((connection['created_at'] - created_at).total_seconds() * 1000))
+    if not samples:
+        return None
+    return int(sum(samples) / len(samples))

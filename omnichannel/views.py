@@ -4,6 +4,7 @@ from django.db import transaction
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django_filters.rest_framework import DjangoFilterBackend
+from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
@@ -27,7 +28,12 @@ from .observability import (
     get_channel_observability_summary,
     get_channel_observability_timeseries,
 )
-from .observability_serializers import AIObservabilityEventSerializer
+from .observability_serializers import (
+    AIObservabilityEventSerializer,
+    ChannelObservabilityQuerySerializer,
+    ChannelObservabilitySummarySerializer,
+    ChannelObservabilityTimeseriesSerializer,
+)
 from .serializers import (
     ConversationSerializer,
     MessageCreateSerializer,
@@ -159,6 +165,24 @@ class AIObservabilityEventsView(WorkspaceAIObservabilityBaseView):
 class ChannelObservabilitySummaryView(WorkspaceAIObservabilityBaseView):
     """Metricas de ciclo de vida/trafego dos canais WhatsApp por workspace."""
 
+    serializer_class = ChannelObservabilitySummarySerializer
+
+    @extend_schema(
+        operation_id='workspace_channel_observability_summary_retrieve',
+        description=(
+            'Retorna metricas seguras dos canais do Workspace. '
+            'channels_connected/channels_disconnected sao um snapshot atual e '
+            'nao dependem da janela; campos terminados em _events sao historicos.'
+        ),
+        parameters=[ChannelObservabilityQuerySerializer],
+        responses={
+            200: ChannelObservabilitySummarySerializer,
+            400: OpenApiResponse(description='Parametros de consulta invalidos.'),
+            401: OpenApiResponse(description='Autenticacao obrigatoria.'),
+            403: OpenApiResponse(description='Acesso negado.'),
+            404: OpenApiResponse(description='Workspace nao encontrado.'),
+        },
+    )
     def get(self, request: Request, workspace_id: str) -> Response:
         workspace = self.get_workspace(request)
         filters = self.get_filters(request)
@@ -168,6 +192,20 @@ class ChannelObservabilitySummaryView(WorkspaceAIObservabilityBaseView):
 class ChannelObservabilityTimeseriesView(WorkspaceAIObservabilityBaseView):
     """Serie temporal de eventos de canal WhatsApp por workspace."""
 
+    serializer_class = ChannelObservabilityTimeseriesSerializer
+
+    @extend_schema(
+        operation_id='workspace_channel_observability_timeseries_retrieve',
+        description='Retorna transicoes e volume de trafego por hora ou dia, no Workspace.',
+        parameters=[ChannelObservabilityQuerySerializer],
+        responses={
+            200: ChannelObservabilityTimeseriesSerializer,
+            400: OpenApiResponse(description='Parametros de consulta invalidos.'),
+            401: OpenApiResponse(description='Autenticacao obrigatoria.'),
+            403: OpenApiResponse(description='Acesso negado.'),
+            404: OpenApiResponse(description='Workspace nao encontrado.'),
+        },
+    )
     def get(self, request: Request, workspace_id: str) -> Response:
         workspace = self.get_workspace(request)
         filters = self.get_filters(request)

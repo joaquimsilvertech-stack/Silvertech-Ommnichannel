@@ -258,6 +258,15 @@ EVOLUTION_EVENT_PROCESSING_STALE_SECONDS = env.int(
     'EVOLUTION_EVENT_PROCESSING_STALE_SECONDS',
     default=300,
 )
+# Politica declarativa para purge futuro. Este microfix nao remove eventos.
+CHANNEL_OBSERVABILITY_TRAFFIC_RETENTION_DAYS = env.int(
+    'CHANNEL_OBSERVABILITY_TRAFFIC_RETENTION_DAYS',
+    default=90,
+)
+CHANNEL_OBSERVABILITY_LIFECYCLE_RETENTION_DAYS = env.int(
+    'CHANNEL_OBSERVABILITY_LIFECYCLE_RETENTION_DAYS',
+    default=365,
+)
 if EVOLUTION_WEBHOOK_MAX_BODY_BYTES <= 0:
     raise ImproperlyConfigured(
         'EVOLUTION_WEBHOOK_MAX_BODY_BYTES deve ser um inteiro positivo.',
@@ -273,6 +282,14 @@ if EVOLUTION_QR_TTL_SECONDS <= 0:
 if EVOLUTION_EVENT_PROCESSING_STALE_SECONDS <= 0:
     raise ImproperlyConfigured(
         'EVOLUTION_EVENT_PROCESSING_STALE_SECONDS deve ser um inteiro positivo.',
+    )
+if CHANNEL_OBSERVABILITY_TRAFFIC_RETENTION_DAYS <= 0:
+    raise ImproperlyConfigured(
+        'CHANNEL_OBSERVABILITY_TRAFFIC_RETENTION_DAYS deve ser um inteiro positivo.',
+    )
+if CHANNEL_OBSERVABILITY_LIFECYCLE_RETENTION_DAYS <= 0:
+    raise ImproperlyConfigured(
+        'CHANNEL_OBSERVABILITY_LIFECYCLE_RETENTION_DAYS deve ser um inteiro positivo.',
     )
 
 # Criptografia de campos sensiveis por tenant.
